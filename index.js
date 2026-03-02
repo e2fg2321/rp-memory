@@ -27,7 +27,7 @@ const defaultSettings = {
     userMessageWeight: 'high',
     messagesPerExtraction: 10,
     maxRetries: 2,
-    debugMode: false,
+    debugMode: true,
 };
 
 // Singletons
@@ -461,55 +461,62 @@ async function openAddEntityDialog(category) {
         return;
     }
 
-    const nameInput = category === 'mainCharacter'
-        ? `<input id="rp_mem_new_name" class="text_pole" type="text" value="{{user}}" />`
-        : `<input id="rp_mem_new_name" class="text_pole" type="text" placeholder="Enter name..." />`;
+    try {
+        const defaultName = category === 'mainCharacter' ? '{{user}}' : '';
+        const name = await Popup.show.input(
+            `Add ${categoryLabels[category] || category}`,
+            'Enter a name:',
+            defaultName,
+        );
 
-    const html = `
-    <div class="rp-mem-editor">
-        <h3>Add ${categoryLabels[category] || category}</h3>
-        <label>Name</label>
-        ${nameInput}
-    </div>`;
+        debugLog('Add entity result:', name);
 
-    const result = await Popup.show.confirm(html, 'Create');
-
-    if (result === POPUP_RESULT.AFFIRMATIVE) {
-        const name = $('#rp_mem_new_name').val()?.trim();
-        if (!name) return;
+        if (!name || !name.trim()) return;
 
         const turn = memoryStore.getTurnCounter();
-        const entity = createEmptyEntity(category, name, turn);
+        const entity = createEmptyEntity(category, name.trim(), turn);
         memoryStore.addEntity(category, entity);
         saveMemoryState();
         injectMemoryPrompt();
         renderMemoryUI();
+        debugLog('Entity added:', category, entity.id);
 
         // Open editor immediately for the new entity
         openEditEntityDialog(category, entity.id);
+    } catch (err) {
+        console.error('[RP Memory] Error adding entity:', err);
     }
 }
 
 async function openEditEntityDialog(category, entityId) {
     const entity = memoryStore.getEntity(category, entityId);
-    if (!entity) return;
+    if (!entity) {
+        debugLog('Edit: entity not found', category, entityId);
+        return;
+    }
 
-    const html = buildEntityEditorHTML(category, entity);
+    try {
+        const html = buildEntityEditorHTML(category, entity);
+        const popup = new Popup(html, POPUP_TYPE.CONFIRM, null, {
+            wide: true,
+            okButton: 'Save',
+            cancelButton: 'Cancel',
+        });
+        const result = await popup.show();
 
-    const result = await Popup.show.confirm(html, 'Save');
+        debugLog('Edit dialog result:', result);
 
-    if (result === POPUP_RESULT.AFFIRMATIVE) {
-        // Read updated values from DOM
+        if (result !== POPUP_RESULT.AFFIRMATIVE) return;
+
+        // Read updated values from the popup DOM (still alive at this point)
         const updatedName = $('#rp_mem_edit_name').val()?.trim() || entity.name;
         const updatedTier = parseInt($('#rp_mem_edit_tier').val()) || entity.tier;
         const updatedImportance = parseFloat($('#rp_mem_edit_importance').val()) || entity.importance;
         const updatedFields = readFieldsFromDOM(category);
 
         // Update ID if name changed
-        let newId = entity.id;
         if (updatedName !== entity.name && category !== 'mainCharacter') {
-            newId = generateId(updatedName);
-            // Delete old, create with new ID
+            const newId = generateId(updatedName);
             memoryStore.deleteEntity(category, entity.id);
             memoryStore.addEntity(category, {
                 ...entity,
@@ -535,6 +542,9 @@ async function openEditEntityDialog(category, entityId) {
         saveMemoryState();
         injectMemoryPrompt();
         renderMemoryUI();
+        debugLog('Entity updated:', category, entityId);
+    } catch (err) {
+        console.error('[RP Memory] Error editing entity:', err);
     }
 }
 
@@ -706,8 +716,8 @@ async function deleteEntity(category, entityId) {
     if (!entity) return;
 
     const result = await Popup.show.confirm(
-        `Delete "${escapeHtml(entity.name)}" from memory?`,
-        'Delete',
+        `Delete "${escapeHtml(entity.name)}"?`,
+        'This will remove the entity from memory.',
     );
 
     if (result === POPUP_RESULT.AFFIRMATIVE) {
@@ -720,8 +730,8 @@ async function deleteEntity(category, entityId) {
 
 async function clearAllMemory() {
     const result = await Popup.show.confirm(
-        'Clear ALL memory for this chat? This cannot be undone.',
-        'Clear All',
+        'Clear ALL memory?',
+        'This will remove all memory for this chat. This cannot be undone.',
     );
 
     if (result === POPUP_RESULT.AFFIRMATIVE) {
