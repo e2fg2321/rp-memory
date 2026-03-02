@@ -1,8 +1,8 @@
 import { eventSource, event_types, extension_prompt_types, extension_prompt_roles,
-    saveSettingsDebounced, setExtensionPrompt } from '../../../script.js';
+    saveSettingsDebounced, setExtensionPrompt } from '../../../../script.js';
 import { extension_settings, getContext, renderExtensionTemplateAsync,
-    saveMetadataDebounced } from '../../extensions.js';
-import { Popup, POPUP_TYPE, POPUP_RESULT } from '../../popup.js';
+    saveMetadataDebounced } from '../../../extensions.js';
+import { Popup, POPUP_TYPE, POPUP_RESULT } from '../../../popup.js';
 import { MemoryStore } from './src/MemoryStore.js';
 import { PromptInjector } from './src/PromptInjector.js';
 import { ExtractionPipeline } from './src/ExtractionPipeline.js';
