@@ -101,6 +101,10 @@
 
                 <!-- Actions -->
                 <div class="rp-mem-actions">
+                    <div id="rp_memory_open_panel" class="menu_button menu_button_icon" title="Open floating memory panel">
+                        <i class="fa-solid fa-up-right-from-square"></i>
+                        <span>Panel</span>
+                    </div>
                     <div id="rp_memory_force_extract" class="menu_button menu_button_icon">
                         <i class="fa-solid fa-wand-magic-sparkles"></i>
                         <span>Extract Now</span>
@@ -116,16 +120,26 @@
             <!-- ============ TAB: Settings ============ -->
             <div id="rp_memory_tab_settings" class="rp-mem-tab-content" style="display:none;">
 
-                <label>OpenRouter API Key</label>
-                <input id="rp_memory_api_key" type="password" class="text_pole" placeholder="sk-or-..." />
+                <label class="checkbox_label">
+                    <input id="rp_memory_use_st_key" type="checkbox" />
+                    <span>Use SillyTavern's OpenRouter key</span>
+                </label>
+                <div id="rp_memory_st_key_status" class="rp-mem-key-status" style="display:none;"></div>
+
+                <div id="rp_memory_api_key_container">
+                    <label>OpenRouter API Key</label>
+                    <input id="rp_memory_api_key" type="password" class="text_pole" placeholder="sk-or-..." />
+                </div>
 
                 <label>Extraction Model</label>
-                <select id="rp_memory_model" class="text_pole">
-                    <option value="google/gemini-2.0-flash-001">Gemini 2.0 Flash</option>
-                    <option value="google/gemini-2.5-flash-preview">Gemini 2.5 Flash Preview</option>
-                    <option value="deepseek/deepseek-chat-v3-0324">DeepSeek V3</option>
-                    <option value="qwen/qwen-2.5-72b-instruct">Qwen 2.5 72B</option>
-                </select>
+                <div class="rp-mem-model-row">
+                    <select id="rp_memory_model" class="text_pole">
+                        <option value="">-- Loading models... --</option>
+                    </select>
+                    <div id="rp_memory_refresh_models" class="menu_button menu_button_icon" title="Refresh model list">
+                        <i class="fa-solid fa-arrows-rotate"></i>
+                    </div>
+                </div>
 
                 <div id="rp_memory_test_connection" class="menu_button menu_button_icon">
                     <i class="fa-solid fa-plug"></i>
@@ -179,6 +193,28 @@
                 <div class="flex-container alignitemscenter" id="rp_memory_depth_container" style="display:none;">
                     <label>Depth:</label>
                     <input id="rp_memory_depth" class="text_pole" type="number" min="0" max="9999" value="2" style="width:80px;" />
+                </div>
+
+                <hr />
+
+                <label class="checkbox_label">
+                    <input id="rp_memory_embeddings_enabled" type="checkbox" />
+                    <span>Smart Retrieval (Embeddings)</span>
+                </label>
+                <div class="rp-mem-embeddings-hint">
+                    When enabled, only injects entities relevant to the current scene instead of all active entities.
+                </div>
+
+                <div id="rp_memory_embedding_model_container" style="display:none;">
+                    <label>Embedding Model</label>
+                    <div class="rp-mem-model-row">
+                        <select id="rp_memory_embedding_model" class="text_pole">
+                            <option value="openai/text-embedding-3-small">openai/text-embedding-3-small</option>
+                        </select>
+                        <div id="rp_memory_refresh_embedding_models" class="menu_button menu_button_icon" title="Refresh embedding model list">
+                            <i class="fa-solid fa-arrows-rotate"></i>
+                        </div>
+                    </div>
                 </div>
 
                 <hr />

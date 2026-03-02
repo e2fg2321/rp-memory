@@ -6,10 +6,29 @@ export class PromptInjector {
     }
 
     /**
-     * Format all Tier 1 + Tier 2 entities into a prompt string.
-     * Returns empty string if no entities to inject.
+     * Format entities into a prompt string.
+     *
+     * If relevantEntities is provided (from embedding ranking), uses that list
+     * with budget enforcement. Tier 1 entities from the list are always included.
+     *
+     * If relevantEntities is null, falls back to the original behavior:
+     * all Tier 1 + Tier 2 entities injected.
+     *
+     * @param {object} memoryStore
+     * @param {Array<{category: string, entity: object, score: number}>|null} relevantEntities
+     * @returns {string}
      */
-    format(memoryStore) {
+    format(memoryStore, relevantEntities = null) {
+        if (relevantEntities !== null) {
+            return this._formatWithBudget(relevantEntities);
+        }
+        return this._formatAll(memoryStore);
+    }
+
+    /**
+     * Original behavior: format all Tier 1 + Tier 2 entities.
+     */
+    _formatAll(memoryStore) {
         const sections = [];
 
         const mc = memoryStore.getMainCharacter();
@@ -40,6 +59,87 @@ export class PromptInjector {
         if (sections.length === 0) return '';
 
         return `[RP Memory - World State]\n${sections.join('\n\n')}\n[/RP Memory]`;
+    }
+
+    /**
+     * Budget-aware formatting: include entities in rank order, stopping when budget is reached.
+     * Tier 1 (pinned) entities are always included first.
+     */
+    _formatWithBudget(relevantEntities) {
+        const budget = this.getSettings().tokenBudget;
+
+        // Separate pinned vs ranked
+        const pinned = relevantEntities.filter(e => e.entity.tier === 1);
+        const ranked = relevantEntities.filter(e => e.entity.tier !== 1);
+
+        // Group by category for formatting
+        const included = { mainCharacter: [], characters: [], locations: [], goals: [], events: [] };
+
+        let currentTokens = estimateTokens('[RP Memory - World State]\n[/RP Memory]');
+
+        // Always include pinned entities
+        for (const item of pinned) {
+            const entityText = this._formatSingleEntity(item.category, item.entity);
+            const entityTokens = estimateTokens(entityText);
+            included[item.category].push(item.entity);
+            currentTokens += entityTokens;
+        }
+
+        // Add ranked entities until budget is reached
+        for (const item of ranked) {
+            const entityText = this._formatSingleEntity(item.category, item.entity);
+            const entityTokens = estimateTokens(entityText);
+
+            if (budget > 0 && (currentTokens + entityTokens) > budget) {
+                break;
+            }
+
+            included[item.category].push(item.entity);
+            currentTokens += entityTokens;
+        }
+
+        // Build sections from included entities
+        const sections = [];
+
+        if (included.mainCharacter.length > 0) {
+            sections.push(this._formatMainCharacter(included.mainCharacter[0]));
+        }
+        if (included.characters.length > 0) {
+            sections.push(this._formatCharacters(included.characters));
+        }
+        if (included.locations.length > 0) {
+            sections.push(this._formatLocations(included.locations));
+        }
+        if (included.goals.length > 0) {
+            sections.push(this._formatGoals(included.goals));
+        }
+        if (included.events.length > 0) {
+            sections.push(this._formatEvents(included.events));
+        }
+
+        if (sections.length === 0) return '';
+
+        return `[RP Memory - World State]\n${sections.join('\n\n')}\n[/RP Memory]`;
+    }
+
+    /**
+     * Format a single entity into text (used for token estimation during budget enforcement).
+     */
+    _formatSingleEntity(category, entity) {
+        switch (category) {
+            case 'mainCharacter':
+                return this._formatMainCharacter(entity);
+            case 'characters':
+                return this._formatCharacters([entity]);
+            case 'locations':
+                return this._formatLocations([entity]);
+            case 'goals':
+                return this._formatGoals([entity]);
+            case 'events':
+                return this._formatEvents([entity]);
+            default:
+                return '';
+        }
     }
 
     /**

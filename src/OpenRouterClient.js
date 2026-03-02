@@ -2,6 +2,25 @@ export class OpenRouterClient {
     constructor(getSettings) {
         this.getSettings = getSettings;
         this.baseUrl = 'https://openrouter.ai/api/v1';
+        this._keyResolver = null;
+    }
+
+    /**
+     * Set an async function that returns the API key.
+     * When set, this is used instead of getSettings().apiKey.
+     */
+    setKeyResolver(fn) {
+        this._keyResolver = fn;
+    }
+
+    /**
+     * Resolve the API key — uses the key resolver if set, otherwise falls back to settings.
+     */
+    async resolveKey() {
+        if (this._keyResolver) {
+            return await this._keyResolver();
+        }
+        return this.getSettings().apiKey;
     }
 
     /**
@@ -10,7 +29,7 @@ export class OpenRouterClient {
      */
     async chatCompletion(messages) {
         const settings = this.getSettings();
-        const apiKey = settings.apiKey;
+        const apiKey = await this.resolveKey();
 
         if (!apiKey) {
             throw new Error('OpenRouter API key not configured');
@@ -75,6 +94,40 @@ export class OpenRouterClient {
     }
 
     /**
+     * Send an embedding request to OpenRouter.
+     * @param {string[]} texts - Array of texts to embed
+     * @param {string} model - Embedding model ID
+     * @returns {Promise<number[][]>} Array of embedding vectors
+     */
+    async embedText(texts, model) {
+        const apiKey = await this.resolveKey();
+
+        if (!apiKey) {
+            throw new Error('OpenRouter API key not configured');
+        }
+
+        const response = await fetch(`${this.baseUrl}/embeddings`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${apiKey}`,
+                'HTTP-Referer': 'https://sillytavern.app',
+                'X-Title': 'RP Memory Extension',
+            },
+            body: JSON.stringify({ model, input: texts }),
+        });
+
+        if (!response.ok) {
+            const errData = await response.json().catch(() => ({}));
+            const errMsg = errData.error?.message || response.statusText;
+            throw new Error(`OpenRouter embeddings error (${response.status}): ${errMsg}`);
+        }
+
+        const data = await response.json();
+        return data.data.map(d => d.embedding);
+    }
+
+    /**
      * Test connectivity with a minimal request.
      */
     async testConnection() {
@@ -83,6 +136,76 @@ export class OpenRouterClient {
         ]);
         const parsed = JSON.parse(response);
         return parsed.status === 'ok';
+    }
+
+    /**
+     * Fetch available models from OpenRouter's public /models endpoint.
+     * Filters to text-output models, sorted by prompt price (cheapest first).
+     */
+    async fetchModels() {
+        const response = await fetch(`${this.baseUrl}/models`, {
+            headers: {
+                'HTTP-Referer': 'https://sillytavern.app',
+                'X-Title': 'RP Memory Extension',
+            },
+        });
+
+        if (!response.ok) {
+            throw new Error(`Failed to fetch models: ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        return data.data
+            .filter(m => m.architecture?.output_modalities?.includes('text'))
+            .sort((a, b) => {
+                const aPrice = parseFloat(a.pricing?.prompt || '999');
+                const bPrice = parseFloat(b.pricing?.prompt || '999');
+                return aPrice - bPrice;
+            })
+            .map(m => ({
+                id: m.id,
+                name: m.name,
+                promptPrice: m.pricing?.prompt,
+                completionPrice: m.pricing?.completion,
+                contextLength: m.context_length,
+            }));
+    }
+
+    /**
+     * Fetch available embedding models from OpenRouter.
+     * Filters to models with modality:embedding architecture.
+     */
+    async fetchEmbeddingModels() {
+        const response = await fetch(`${this.baseUrl}/models`, {
+            headers: {
+                'HTTP-Referer': 'https://sillytavern.app',
+                'X-Title': 'RP Memory Extension',
+            },
+        });
+
+        if (!response.ok) {
+            throw new Error(`Failed to fetch models: ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        return data.data
+            .filter(m => {
+                const modalities = m.architecture?.output_modalities || [];
+                return modalities.includes('embedding') || modalities.includes('embeddings');
+            })
+            .sort((a, b) => {
+                const aPrice = parseFloat(a.pricing?.prompt || '999');
+                const bPrice = parseFloat(b.pricing?.prompt || '999');
+                return aPrice - bPrice;
+            })
+            .map(m => ({
+                id: m.id,
+                name: m.name,
+                promptPrice: m.pricing?.prompt,
+                contextLength: m.context_length,
+            }));
     }
 
     _sleep(ms) {

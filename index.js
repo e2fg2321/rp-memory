@@ -2,12 +2,16 @@ import { eventSource, event_types, extension_prompt_types, extension_prompt_role
     saveSettingsDebounced, setExtensionPrompt } from '../../../../script.js';
 import { extension_settings, getContext, renderExtensionTemplateAsync,
     saveMetadataDebounced } from '../../../extensions.js';
-import { Popup, POPUP_TYPE, POPUP_RESULT } from '../../../popup.js';
+import { Popup, POPUP_RESULT } from '../../../popup.js';
+import { dragElement } from '../../RossAscends-mods.js';
+import { loadMovingUIState } from '../../power-user.js';
+import { SECRET_KEYS, secret_state, findSecret } from '../../../../secrets.js';
 import { MemoryStore } from './src/MemoryStore.js';
 import { PromptInjector } from './src/PromptInjector.js';
 import { ExtractionPipeline } from './src/ExtractionPipeline.js';
 import { DecayEngine } from './src/DecayEngine.js';
 import { OpenRouterClient } from './src/OpenRouterClient.js';
+import { EmbeddingService } from './src/EmbeddingService.js';
 import { createEmptyEntity, generateId } from './src/Utils.js';
 
 const MODULE_NAME = 'rp_memory';
@@ -16,6 +20,7 @@ const EXTENSION_KEY = 'rp_memory';
 const defaultSettings = {
     enabled: true,
     apiKey: '',
+    useSTKey: false,
     model: 'google/gemini-2.0-flash-001',
     extractionInterval: 2,
     decayFactor: 0.95,
@@ -28,6 +33,8 @@ const defaultSettings = {
     messagesPerExtraction: 10,
     maxRetries: 2,
     debugMode: true,
+    embeddingsEnabled: false,
+    embeddingModel: 'openai/text-embedding-3-small',
 };
 
 // Singletons
@@ -36,7 +43,11 @@ let injector = null;
 let apiClient = null;
 let pipeline = null;
 let decayEngine = null;
+let embeddingService = null;
 let lastProcessedLength = 0;
+let cachedModelList = null;
+let cachedEmbeddingModelList = null;
+let cachedSTKey = null; // Cached SillyTavern API key for the session
 
 // ===================== Settings =====================
 
@@ -55,10 +66,70 @@ function getSettings() {
     return extension_settings[EXTENSION_KEY];
 }
 
+/**
+ * Resolve the API key. If useSTKey is enabled, tries to use SillyTavern's
+ * OpenRouter key (cached for the session). Otherwise uses the extension's own key.
+ */
+async function resolveApiKey() {
+    const s = getSettings();
+    if (s.useSTKey) {
+        // Check if ST has an OpenRouter key configured
+        if (!secret_state[SECRET_KEYS.OPENROUTER]) {
+            return null;
+        }
+        // Return cached key if available
+        if (cachedSTKey) {
+            return cachedSTKey;
+        }
+        // Fetch the actual key via findSecret (requires allowKeysExposure)
+        const key = await findSecret(SECRET_KEYS.OPENROUTER);
+        if (key) {
+            cachedSTKey = key;
+        }
+        return key;
+    }
+    return s.apiKey;
+}
+
+/**
+ * Update the ST key status indicator in the UI.
+ */
+function updateSTKeyStatus() {
+    const s = getSettings();
+    const $status = $('#rp_memory_st_key_status');
+
+    if (!s.useSTKey) {
+        $status.hide();
+        return;
+    }
+
+    $status.show();
+
+    if (!secret_state[SECRET_KEYS.OPENROUTER]) {
+        $status.text('No OpenRouter key found — configure in ST API settings')
+            .removeClass('rp-mem-key-ok').addClass('rp-mem-key-error');
+        return;
+    }
+
+    // Key exists in ST — try to resolve it
+    resolveApiKey().then(key => {
+        if (key) {
+            $status.text('Key available from SillyTavern')
+                .removeClass('rp-mem-key-error').addClass('rp-mem-key-ok');
+        } else {
+            $status.text('Enable "allowKeysExposure" in config.yaml, or enter key manually')
+                .removeClass('rp-mem-key-ok').addClass('rp-mem-key-error');
+        }
+    });
+}
+
 function syncUIFromSettings() {
     const s = getSettings();
     $('#rp_memory_enabled').prop('checked', s.enabled);
+    $('#rp_memory_use_st_key').prop('checked', s.useSTKey);
     $('#rp_memory_api_key').val(s.apiKey);
+    $('#rp_memory_api_key_container').toggle(!s.useSTKey);
+    updateSTKeyStatus();
     $('#rp_memory_model').val(s.model);
     $('#rp_memory_interval').val(s.extractionInterval);
     $('#rp_memory_interval_val').text(s.extractionInterval);
@@ -74,6 +145,9 @@ function syncUIFromSettings() {
     $('#rp_memory_depth').val(s.injectionDepth);
     $('#rp_memory_depth_container').toggle(s.injectionPosition === extension_prompt_types.IN_CHAT);
     $('#rp_memory_debug').prop('checked', s.debugMode);
+    $('#rp_memory_embeddings_enabled').prop('checked', s.embeddingsEnabled);
+    $('#rp_memory_embedding_model_container').toggle(s.embeddingsEnabled);
+    $('#rp_memory_embedding_model').val(s.embeddingModel);
 }
 
 function bindSettingsListeners() {
@@ -81,6 +155,15 @@ function bindSettingsListeners() {
         getSettings().enabled = $(this).prop('checked');
         saveSettingsDebounced();
         injectMemoryPrompt();
+    });
+
+    $('#rp_memory_use_st_key').on('change', function () {
+        const checked = $(this).prop('checked');
+        getSettings().useSTKey = checked;
+        $('#rp_memory_api_key_container').toggle(!checked);
+        cachedSTKey = null; // Clear cached key on toggle
+        updateSTKeyStatus();
+        saveSettingsDebounced();
     });
 
     $('#rp_memory_api_key').on('input', function () {
@@ -132,6 +215,30 @@ function bindSettingsListeners() {
         saveSettingsDebounced();
     });
 
+    // Embeddings toggle
+    $('#rp_memory_embeddings_enabled').on('change', function () {
+        const checked = $(this).prop('checked');
+        getSettings().embeddingsEnabled = checked;
+        $('#rp_memory_embedding_model_container').toggle(checked);
+        saveSettingsDebounced();
+        if (checked) {
+            loadEmbeddingModelList();
+        }
+    });
+
+    // Embedding model selection
+    $('#rp_memory_embedding_model').on('change', function () {
+        getSettings().embeddingModel = $(this).val();
+        // Clear embedding cache when model changes
+        if (embeddingService) {
+            embeddingService.clearCache();
+        }
+        saveSettingsDebounced();
+    });
+
+    // Refresh embedding models button
+    $('#rp_memory_refresh_embedding_models').on('click', () => loadEmbeddingModelList(true));
+
     // Test connection
     $('#rp_memory_test_connection').on('click', testConnection);
 
@@ -140,6 +247,19 @@ function bindSettingsListeners() {
 
     // Clear all
     $('#rp_memory_clear_all').on('click', clearAllMemory);
+
+    // Open floating panel
+    $('#rp_memory_open_panel').on('click', openMemoryPanel);
+
+    // Refresh models button
+    $('#rp_memory_refresh_models').on('click', () => loadModelList(true));
+
+    // Reload model list when API key changes (debounced)
+    let modelLoadTimer = null;
+    $('#rp_memory_api_key').on('input', function () {
+        clearTimeout(modelLoadTimer);
+        modelLoadTimer = setTimeout(() => loadModelList(true), 1000);
+    });
 }
 
 // ===================== Tab Navigation =====================
@@ -170,17 +290,38 @@ function bindCategoryListeners() {
         openAddEntityDialog(category);
     });
 
-    // Entity header click (expand/collapse fields)
+    // Entity header click (expand/collapse fields) — skip if in edit mode
     $(document).on('click', '.rp-mem-entity-header', function (e) {
         if ($(e.target).closest('.rp-mem-entity-actions').length) return;
+        if ($(this).closest('.rp-mem-editing').length) return;
         $(this).siblings('.rp-mem-entity-fields').toggle();
     });
 
-    // Edit button
+    // Edit button — inline edit mode
     $(document).on('click', '.rp-mem-edit-btn', function (e) {
         e.stopPropagation();
         const card = $(this).closest('.rp-mem-entity');
-        openEditEntityDialog(card.data('category'), card.data('id'));
+        enterEditMode(card.data('category'), card.data('id'));
+    });
+
+    // Save button (inline edit)
+    $(document).on('click', '.rp-mem-save-btn', function (e) {
+        e.stopPropagation();
+        exitEditMode(true);
+    });
+
+    // Cancel button (inline edit)
+    $(document).on('click', '.rp-mem-cancel-btn', function (e) {
+        e.stopPropagation();
+        exitEditMode(false);
+    });
+
+    // Escape key cancels inline edit
+    $(document).on('keydown', '.rp-mem-editing', function (e) {
+        if (e.key === 'Escape') {
+            e.stopPropagation();
+            exitEditMode(false);
+        }
     });
 
     // Pin/unpin button
@@ -203,15 +344,27 @@ function bindCategoryListeners() {
 function saveMemoryState() {
     const context = getContext();
     if (!context.chatMetadata) return;
-    context.chatMetadata[EXTENSION_KEY] = memoryStore.serialize();
+
+    const state = memoryStore.serialize();
+
+    // Persist entity embeddings alongside memory state
+    if (embeddingService) {
+        state._embeddings = embeddingService.serialize();
+    }
+
+    context.chatMetadata[EXTENSION_KEY] = state;
     saveMetadataDebounced();
     debugLog('Memory state saved');
 }
 
 function onChatChanged() {
     const context = getContext();
+
     if (!context.chat || !context.chatId) {
         memoryStore.clear();
+        if (embeddingService) {
+            embeddingService.clearCache();
+        }
         injectMemoryPrompt();
         renderMemoryUI();
         return;
@@ -219,6 +372,12 @@ function onChatChanged() {
 
     const savedState = context.chatMetadata?.[EXTENSION_KEY] || null;
     memoryStore.load(savedState);
+
+    // Load persisted embeddings (strips _embeddings from state so MemoryStore ignores it)
+    if (embeddingService) {
+        embeddingService.load(savedState?._embeddings || null);
+    }
+
     injectMemoryPrompt();
     renderMemoryUI();
     debugLog('Chat changed, memory loaded', savedState ? 'from saved state' : 'fresh');
@@ -226,14 +385,36 @@ function onChatChanged() {
 
 // ===================== Prompt Injection =====================
 
-function injectMemoryPrompt() {
+async function injectMemoryPrompt() {
     const s = getSettings();
     if (!s.enabled) {
         setExtensionPrompt(MODULE_NAME, '', extension_prompt_types.IN_PROMPT, 0);
         return;
     }
 
-    const promptText = injector.format(memoryStore);
+    let promptText;
+    const apiKey = await resolveApiKey();
+
+    if (s.embeddingsEnabled && apiKey && embeddingService) {
+        try {
+            const context = getContext();
+            const recentMessages = getRecentMessageTexts(context, s.messagesPerExtraction);
+
+            if (recentMessages.length > 0) {
+                const ranked = await embeddingService.rankEntities(memoryStore, recentMessages);
+                promptText = injector.format(memoryStore, ranked);
+                debugLog('Embedding-based injection:', ranked.length, 'entities ranked');
+            } else {
+                promptText = injector.format(memoryStore);
+            }
+        } catch (err) {
+            console.warn('[RP Memory] Embedding ranking failed, falling back to full injection:', err.message);
+            promptText = injector.format(memoryStore);
+        }
+    } else {
+        promptText = injector.format(memoryStore);
+    }
+
     setExtensionPrompt(
         MODULE_NAME,
         promptText,
@@ -258,17 +439,42 @@ function injectMemoryPrompt() {
     debugLog('Prompt injected', `${tokens} tokens`);
 }
 
+/**
+ * Extract recent message texts from the chat context.
+ */
+function getRecentMessageTexts(context, count) {
+    if (!context.chat?.length) return [];
+
+    const messages = context.chat
+        .filter(m => !m.is_system)
+        .slice(-count)
+        .map(m => m.mes || '')
+        .filter(Boolean);
+
+    return messages;
+}
+
 // ===================== Render UI =====================
 
 function renderMemoryUI() {
-    const counts = memoryStore.getCounts();
-
-    // Update counts
-    for (const [cat, count] of Object.entries(counts)) {
-        $(`.rp-mem-category-count[data-category="${cat}"]`).text(count);
+    // If a card is being edited, defer full re-render to avoid destroying edit state.
+    // Counts will still update; full re-render happens when edit completes.
+    if (currentEditCard) {
+        const counts = memoryStore.getCounts();
+        for (const [cat, count] of Object.entries(counts)) {
+            $(`.rp-mem-category-count[data-category="${cat}"]`).text(count);
+        }
+        return;
     }
 
-    // Render each category
+    const counts = memoryStore.getCounts();
+
+    // Update counts in sidebar
+    for (const [cat, count] of Object.entries(counts)) {
+        $(`#rp_memory_settings .rp-mem-category-count[data-category="${cat}"]`).text(count);
+    }
+
+    // Render each category in sidebar
     renderCategoryEntities('mainCharacter');
     renderCategoryEntities('characters');
     renderCategoryEntities('locations');
@@ -284,6 +490,9 @@ function renderMemoryUI() {
     }
 
     renderConflicts();
+
+    // Also update floating panel if open
+    renderPanelUI();
 }
 
 function renderCategoryEntities(category) {
@@ -319,9 +528,9 @@ function renderEntityCard(category, entity) {
     return `
     <div class="rp-mem-entity ${tierClass[entity.tier] || ''}" data-category="${category}" data-id="${entity.id}">
         <div class="rp-mem-entity-header">
-            <span class="rp-mem-entity-name">${escapeHtml(entity.name)}</span>
-            <span class="rp-mem-tier-badge">${tierLabel[entity.tier] || '?'}</span>
-            <span class="rp-mem-importance">${entity.importance}</span>
+            <span class="rp-mem-entity-name" data-field="name">${escapeHtml(entity.name)}</span>
+            <span class="rp-mem-tier-badge" data-field="tier" data-value="${entity.tier}">${tierLabel[entity.tier] || '?'}</span>
+            <span class="rp-mem-importance" data-field="importance" data-value="${entity.importance}">${entity.importance}</span>
             ${hasConflicts ? '<i class="fa-solid fa-triangle-exclamation rp-mem-conflict-icon" title="Has unresolved conflicts"></i>' : ''}
             <div class="rp-mem-entity-actions">
                 <i class="fa-solid fa-pen rp-mem-edit-btn" title="Edit"></i>
@@ -351,20 +560,21 @@ function renderEntityFields(category, fields) {
                     if (v.target && v.nature) return `${v.target}: ${v.nature}`;
                     return JSON.stringify(v);
                 }).join(', ');
-                lines.push(`<div class="rp-mem-field"><span class="rp-mem-field-label">${escapeHtml(label)}:</span> <span class="rp-mem-field-value">${escapeHtml(formatted)}</span></div>`);
+                lines.push(`<div class="rp-mem-field" data-field="${escapeHtml(key)}" data-type="relationship-array"><span class="rp-mem-field-label">${escapeHtml(label)}:</span> <span class="rp-mem-field-value">${escapeHtml(formatted)}</span></div>`);
             } else {
-                lines.push(`<div class="rp-mem-field"><span class="rp-mem-field-label">${escapeHtml(label)}:</span> <span class="rp-mem-field-value">${escapeHtml(value.join(', '))}</span></div>`);
+                lines.push(`<div class="rp-mem-field" data-field="${escapeHtml(key)}" data-type="array"><span class="rp-mem-field-label">${escapeHtml(label)}:</span> <span class="rp-mem-field-value">${escapeHtml(value.join(', '))}</span></div>`);
             }
         } else if (typeof value === 'object') {
-            // Nested object (e.g., status)
+            // Nested object (e.g., status for mainCharacter)
             for (const [subKey, subVal] of Object.entries(value)) {
                 if (!subVal || (Array.isArray(subVal) && subVal.length === 0)) continue;
                 const subLabel = subKey.charAt(0).toUpperCase() + subKey.slice(1);
                 const displayVal = Array.isArray(subVal) ? subVal.join(', ') : String(subVal);
-                lines.push(`<div class="rp-mem-field"><span class="rp-mem-field-label">${escapeHtml(subLabel)}:</span> <span class="rp-mem-field-value">${escapeHtml(displayVal)}</span></div>`);
+                const subType = Array.isArray(subVal) ? 'array' : 'string';
+                lines.push(`<div class="rp-mem-field" data-field="${escapeHtml(key)}.${escapeHtml(subKey)}" data-type="${subType}"><span class="rp-mem-field-label">${escapeHtml(subLabel)}:</span> <span class="rp-mem-field-value">${escapeHtml(displayVal)}</span></div>`);
             }
         } else {
-            lines.push(`<div class="rp-mem-field"><span class="rp-mem-field-label">${escapeHtml(label)}:</span> <span class="rp-mem-field-value">${escapeHtml(String(value))}</span></div>`);
+            lines.push(`<div class="rp-mem-field" data-field="${escapeHtml(key)}" data-type="string"><span class="rp-mem-field-label">${escapeHtml(label)}:</span> <span class="rp-mem-field-value">${escapeHtml(String(value))}</span></div>`);
         }
     }
 
@@ -444,7 +654,7 @@ function resolveConflict(category, entityId, field, acceptNew) {
     renderMemoryUI();
 }
 
-// ===================== Entity CRUD Dialogs =====================
+// ===================== Entity CRUD =====================
 
 async function openAddEntityDialog(category) {
     const categoryLabels = {
@@ -457,7 +667,7 @@ async function openAddEntityDialog(category) {
 
     // For mainCharacter, check if one already exists
     if (category === 'mainCharacter' && memoryStore.getMainCharacter()) {
-        openEditEntityDialog('mainCharacter', 'main_character');
+        enterEditMode('mainCharacter', 'main_character');
         return;
     }
 
@@ -481,221 +691,295 @@ async function openAddEntityDialog(category) {
         renderMemoryUI();
         debugLog('Entity added:', category, entity.id);
 
-        // Open editor immediately for the new entity
-        openEditEntityDialog(category, entity.id);
+        // Enter inline edit mode on the new card
+        enterEditMode(category, entity.id);
     } catch (err) {
         console.error('[RP Memory] Error adding entity:', err);
     }
 }
 
-async function openEditEntityDialog(category, entityId) {
+/**
+ * Field definitions for inline editing per category.
+ * Each entry: { key, label, type, options? }
+ * type: 'text' | 'textarea' | 'csv' | 'number' | 'select' | 'relationships' | 'nested'
+ * For nested (mainCharacter status), we define sub-fields.
+ */
+const FIELD_DEFS = {
+    characters: [
+        { key: 'description', label: 'Description', type: 'textarea' },
+        { key: 'personality', label: 'Personality', type: 'textarea' },
+        { key: 'status', label: 'Status', type: 'text' },
+        { key: 'relationships', label: 'Relationships (one per line: target: nature)', type: 'relationships' },
+    ],
+    locations: [
+        { key: 'description', label: 'Description', type: 'textarea' },
+        { key: 'atmosphere', label: 'Atmosphere', type: 'text' },
+        { key: 'notableFeatures', label: 'Notable Features (comma-separated)', type: 'csv' },
+        { key: 'connections', label: 'Connections (comma-separated)', type: 'csv' },
+    ],
+    mainCharacter: [
+        { key: 'description', label: 'Description', type: 'textarea' },
+        { key: 'skills', label: 'Skills (comma-separated)', type: 'csv' },
+        { key: 'inventory', label: 'Inventory (comma-separated)', type: 'csv' },
+        { key: 'status.health', label: 'Health', type: 'text' },
+        { key: 'status.conditions', label: 'Conditions (comma-separated)', type: 'csv' },
+        { key: 'status.buffs', label: 'Buffs (comma-separated)', type: 'csv' },
+    ],
+    goals: [
+        { key: 'description', label: 'Description', type: 'textarea' },
+        { key: 'progress', label: 'Progress', type: 'textarea' },
+        { key: 'blockers', label: 'Blockers', type: 'text' },
+        { key: 'status', label: 'Status', type: 'select', options: [
+            { value: 'in_progress', label: 'In Progress' },
+            { value: 'completed', label: 'Completed' },
+            { value: 'failed', label: 'Failed' },
+            { value: 'abandoned', label: 'Abandoned' },
+        ] },
+    ],
+    events: [
+        { key: 'description', label: 'Description', type: 'textarea' },
+        { key: 'turn', label: 'Turn', type: 'number' },
+        { key: 'involvedEntities', label: 'Involved Entities (comma-separated)', type: 'csv' },
+        { key: 'consequences', label: 'Consequences', type: 'textarea' },
+        { key: 'significance', label: 'Significance', type: 'text' },
+    ],
+};
+
+/**
+ * Get a nested field value from entity.fields using dot notation.
+ */
+function getFieldValue(fields, key) {
+    if (key.includes('.')) {
+        const [parent, child] = key.split('.');
+        const parentObj = fields[parent];
+        if (parentObj && typeof parentObj === 'object' && !Array.isArray(parentObj)) {
+            return parentObj[child];
+        }
+        return undefined;
+    }
+    return fields[key];
+}
+
+/**
+ * Set a nested field value on entity.fields using dot notation.
+ */
+function setFieldValue(fields, key, value) {
+    if (key.includes('.')) {
+        const [parent, child] = key.split('.');
+        if (!fields[parent] || typeof fields[parent] !== 'object' || Array.isArray(fields[parent])) {
+            fields[parent] = {};
+        }
+        fields[parent][child] = value;
+    } else {
+        fields[key] = value;
+    }
+}
+
+let currentEditCard = null; // Track the currently editing card
+
+function enterEditMode(category, entityId) {
     const entity = memoryStore.getEntity(category, entityId);
     if (!entity) {
         debugLog('Edit: entity not found', category, entityId);
         return;
     }
 
-    try {
-        const html = buildEntityEditorHTML(category, entity);
-        const popup = new Popup(html, POPUP_TYPE.CONFIRM, null, {
-            wide: true,
-            okButton: 'Save',
-            cancelButton: 'Cancel',
-        });
-        const result = await popup.show();
+    // Cancel any existing edit first
+    if (currentEditCard) {
+        exitEditMode(false);
+    }
 
-        debugLog('Edit dialog result:', result);
+    // Find the card (could be in sidebar or panel)
+    const $card = $(`.rp-mem-entity[data-category="${category}"][data-id="${entityId}"]`).first();
+    if (!$card.length) {
+        debugLog('Edit: card element not found');
+        return;
+    }
 
-        if (result !== POPUP_RESULT.AFFIRMATIVE) return;
+    currentEditCard = { category, entityId, $card };
+    $card.addClass('rp-mem-editing');
 
-        // Read updated values from the popup DOM (still alive at this point)
-        const updatedName = $('#rp_mem_edit_name').val()?.trim() || entity.name;
-        const updatedTier = parseInt($('#rp_mem_edit_tier').val()) || entity.tier;
-        const updatedImportance = parseFloat($('#rp_mem_edit_importance').val()) || entity.importance;
-        const updatedFields = readFieldsFromDOM(category);
+    // Show the fields section
+    $card.find('.rp-mem-entity-fields').show();
 
-        // Update ID if name changed
-        if (updatedName !== entity.name && category !== 'mainCharacter') {
-            const newId = generateId(updatedName);
-            memoryStore.deleteEntity(category, entity.id);
-            memoryStore.addEntity(category, {
-                ...entity,
-                id: newId,
-                name: updatedName,
-                tier: updatedTier,
-                importance: updatedImportance,
-                baseScore: updatedImportance,
-                fields: updatedFields,
-                source: 'manual',
-            });
-        } else {
-            memoryStore.updateEntity(category, entityId, {
-                name: updatedName,
-                tier: updatedTier,
-                importance: updatedImportance,
-                baseScore: updatedImportance,
-                fields: updatedFields,
-                source: 'manual',
-            });
+    // Replace name with input
+    const $name = $card.find('.rp-mem-entity-name');
+    $name.html(`<input type="text" class="rp-mem-inline-input rp-mem-edit-name-input" value="${escapeHtml(entity.name)}" />`);
+
+    // Replace tier badge with dropdown
+    const $tier = $card.find('.rp-mem-tier-badge');
+    $tier.html(`
+        <select class="rp-mem-inline-select rp-mem-edit-tier-select">
+            <option value="1" ${entity.tier === 1 ? 'selected' : ''}>Pinned</option>
+            <option value="2" ${entity.tier === 2 ? 'selected' : ''}>Active</option>
+            <option value="3" ${entity.tier === 3 ? 'selected' : ''}>Archived</option>
+        </select>
+    `);
+
+    // Replace importance with number input
+    const $imp = $card.find('.rp-mem-importance');
+    $imp.html(`<input type="number" class="rp-mem-inline-input rp-mem-edit-importance-input" min="1" max="10" step="0.5" value="${entity.importance}" />`);
+
+    // Replace field values with appropriate inputs
+    const $fields = $card.find('.rp-mem-entity-fields');
+    const defs = FIELD_DEFS[category] || [];
+    const fields = entity.fields || {};
+
+    // Clear and rebuild fields section with editable inputs
+    $fields.empty();
+
+    for (const def of defs) {
+        const value = getFieldValue(fields, def.key);
+        let inputHtml = '';
+
+        switch (def.type) {
+            case 'textarea': {
+                const val = value || '';
+                inputHtml = `<textarea class="rp-mem-inline-textarea" data-edit-field="${def.key}">${escapeHtml(val)}</textarea>`;
+                break;
+            }
+            case 'text': {
+                const val = value || '';
+                inputHtml = `<input type="text" class="rp-mem-inline-input" data-edit-field="${def.key}" value="${escapeHtml(val)}" />`;
+                break;
+            }
+            case 'csv': {
+                const val = Array.isArray(value) ? value.join(', ') : (value || '');
+                inputHtml = `<input type="text" class="rp-mem-inline-input" data-edit-field="${def.key}" value="${escapeHtml(val)}" />`;
+                break;
+            }
+            case 'number': {
+                const val = value || 0;
+                inputHtml = `<input type="number" class="rp-mem-inline-input" data-edit-field="${def.key}" value="${val}" />`;
+                break;
+            }
+            case 'select': {
+                const opts = (def.options || []).map(o =>
+                    `<option value="${o.value}" ${value === o.value ? 'selected' : ''}>${escapeHtml(o.label)}</option>`,
+                ).join('');
+                inputHtml = `<select class="rp-mem-inline-select" data-edit-field="${def.key}">${opts}</select>`;
+                break;
+            }
+            case 'relationships': {
+                const rels = Array.isArray(value) ? value : [];
+                const val = rels.map(r => `${r.target}: ${r.nature}`).join('\n');
+                inputHtml = `<textarea class="rp-mem-inline-textarea" data-edit-field="${def.key}">${escapeHtml(val)}</textarea>`;
+                break;
+            }
         }
 
-        saveMemoryState();
-        injectMemoryPrompt();
-        renderMemoryUI();
-        debugLog('Entity updated:', category, entityId);
-    } catch (err) {
-        console.error('[RP Memory] Error editing entity:', err);
-    }
-}
-
-function buildEntityEditorHTML(category, entity) {
-    const f = entity.fields || {};
-    let fieldsHtml = '';
-
-    switch (category) {
-        case 'characters':
-            fieldsHtml = `
-                <label>Description</label>
-                <textarea id="rp_mem_edit_description" class="text_pole">${escapeHtml(f.description || '')}</textarea>
-                <label>Personality</label>
-                <textarea id="rp_mem_edit_personality" class="text_pole">${escapeHtml(f.personality || '')}</textarea>
-                <label>Status</label>
-                <input id="rp_mem_edit_status" class="text_pole" type="text" value="${escapeHtml(f.status || '')}" />
-                <label>Relationships (one per line: target_id: nature)</label>
-                <textarea id="rp_mem_edit_relationships" class="text_pole">${escapeHtml((f.relationships || []).map(r => `${r.target}: ${r.nature}`).join('\n'))}</textarea>`;
-            break;
-        case 'locations':
-            fieldsHtml = `
-                <label>Description</label>
-                <textarea id="rp_mem_edit_description" class="text_pole">${escapeHtml(f.description || '')}</textarea>
-                <label>Atmosphere</label>
-                <input id="rp_mem_edit_atmosphere" class="text_pole" type="text" value="${escapeHtml(f.atmosphere || '')}" />
-                <label>Notable Features (comma-separated)</label>
-                <input id="rp_mem_edit_notableFeatures" class="text_pole" type="text" value="${escapeHtml((f.notableFeatures || []).join(', '))}" />
-                <label>Connections (comma-separated location IDs)</label>
-                <input id="rp_mem_edit_connections" class="text_pole" type="text" value="${escapeHtml((f.connections || []).join(', '))}" />`;
-            break;
-        case 'mainCharacter':
-            fieldsHtml = `
-                <label>Description</label>
-                <textarea id="rp_mem_edit_description" class="text_pole">${escapeHtml(f.description || '')}</textarea>
-                <label>Skills (comma-separated)</label>
-                <input id="rp_mem_edit_skills" class="text_pole" type="text" value="${escapeHtml((f.skills || []).join(', '))}" />
-                <label>Inventory (comma-separated)</label>
-                <input id="rp_mem_edit_inventory" class="text_pole" type="text" value="${escapeHtml((f.inventory || []).join(', '))}" />
-                <label>Health</label>
-                <input id="rp_mem_edit_health" class="text_pole" type="text" value="${escapeHtml(f.status?.health || '')}" />
-                <label>Conditions (comma-separated)</label>
-                <input id="rp_mem_edit_conditions" class="text_pole" type="text" value="${escapeHtml((f.status?.conditions || []).join(', '))}" />
-                <label>Buffs (comma-separated)</label>
-                <input id="rp_mem_edit_buffs" class="text_pole" type="text" value="${escapeHtml((f.status?.buffs || []).join(', '))}" />`;
-            break;
-        case 'goals':
-            fieldsHtml = `
-                <label>Description</label>
-                <textarea id="rp_mem_edit_description" class="text_pole">${escapeHtml(f.description || '')}</textarea>
-                <label>Progress</label>
-                <textarea id="rp_mem_edit_progress" class="text_pole">${escapeHtml(f.progress || '')}</textarea>
-                <label>Blockers</label>
-                <input id="rp_mem_edit_blockers" class="text_pole" type="text" value="${escapeHtml(f.blockers || '')}" />
-                <label>Status</label>
-                <select id="rp_mem_edit_goal_status" class="text_pole">
-                    <option value="in_progress" ${f.status === 'in_progress' ? 'selected' : ''}>In Progress</option>
-                    <option value="completed" ${f.status === 'completed' ? 'selected' : ''}>Completed</option>
-                    <option value="failed" ${f.status === 'failed' ? 'selected' : ''}>Failed</option>
-                    <option value="abandoned" ${f.status === 'abandoned' ? 'selected' : ''}>Abandoned</option>
-                </select>`;
-            break;
-        case 'events':
-            fieldsHtml = `
-                <label>Description</label>
-                <textarea id="rp_mem_edit_description" class="text_pole">${escapeHtml(f.description || '')}</textarea>
-                <label>Turn</label>
-                <input id="rp_mem_edit_turn" class="text_pole" type="number" value="${f.turn || 0}" />
-                <label>Involved Entities (comma-separated IDs)</label>
-                <input id="rp_mem_edit_involvedEntities" class="text_pole" type="text" value="${escapeHtml((f.involvedEntities || []).join(', '))}" />
-                <label>Consequences</label>
-                <textarea id="rp_mem_edit_consequences" class="text_pole">${escapeHtml(f.consequences || '')}</textarea>
-                <label>Significance</label>
-                <input id="rp_mem_edit_significance" class="text_pole" type="text" value="${escapeHtml(f.significance || '')}" />`;
-            break;
+        $fields.append(`
+            <div class="rp-mem-edit-field-row">
+                <label class="rp-mem-edit-field-label">${escapeHtml(def.label)}</label>
+                ${inputHtml}
+            </div>
+        `);
     }
 
-    return `
-    <div class="rp-mem-editor">
-        <h3>Edit: ${escapeHtml(entity.name)}</h3>
-        <div class="rp-mem-editor-row">
-            <label>Name</label>
-            <input id="rp_mem_edit_name" class="text_pole" type="text" value="${escapeHtml(entity.name)}" />
+    // Add save/cancel bar
+    $fields.append(`
+        <div class="rp-mem-edit-actions">
+            <div class="menu_button rp-mem-save-btn"><i class="fa-solid fa-check"></i> Save</div>
+            <div class="menu_button rp-mem-cancel-btn"><i class="fa-solid fa-xmark"></i> Cancel</div>
         </div>
-        <div class="rp-mem-editor-row">
-            <label>Tier</label>
-            <select id="rp_mem_edit_tier" class="text_pole" style="width:120px;">
-                <option value="1" ${entity.tier === 1 ? 'selected' : ''}>Pinned</option>
-                <option value="2" ${entity.tier === 2 ? 'selected' : ''}>Active</option>
-                <option value="3" ${entity.tier === 3 ? 'selected' : ''}>Archived</option>
-            </select>
-            <label>Importance</label>
-            <input id="rp_mem_edit_importance" class="text_pole" type="number" min="1" max="10" step="0.5" value="${entity.importance}" style="width:80px;" />
-        </div>
-        ${fieldsHtml}
-    </div>`;
+    `);
+
+    // Focus the first input
+    $card.find('.rp-mem-edit-name-input').focus().select();
 }
 
-function readFieldsFromDOM(category) {
+function exitEditMode(save) {
+    if (!currentEditCard) return;
+
+    const { category, entityId, $card } = currentEditCard;
+
+    if (save) {
+        const entity = memoryStore.getEntity(category, entityId);
+        if (entity) {
+            const updatedName = $card.find('.rp-mem-edit-name-input').val()?.trim() || entity.name;
+            const updatedTier = parseInt($card.find('.rp-mem-edit-tier-select').val()) || entity.tier;
+            const updatedImportance = parseFloat($card.find('.rp-mem-edit-importance-input').val()) || entity.importance;
+            const updatedFields = readInlineFields($card, category, entity.fields);
+
+            // Handle name change (requires ID change)
+            if (updatedName !== entity.name && category !== 'mainCharacter') {
+                const newId = generateId(updatedName);
+                memoryStore.deleteEntity(category, entity.id);
+                memoryStore.addEntity(category, {
+                    ...entity,
+                    id: newId,
+                    name: updatedName,
+                    tier: updatedTier,
+                    importance: updatedImportance,
+                    baseScore: updatedImportance,
+                    fields: updatedFields,
+                    source: 'manual',
+                });
+            } else {
+                memoryStore.updateEntity(category, entityId, {
+                    name: updatedName,
+                    tier: updatedTier,
+                    importance: updatedImportance,
+                    baseScore: updatedImportance,
+                    fields: updatedFields,
+                    source: 'manual',
+                });
+            }
+
+            // Invalidate embedding cache for this entity
+            if (embeddingService) {
+                embeddingService.invalidateEntity(category, entityId);
+            }
+
+            saveMemoryState();
+            injectMemoryPrompt();
+            debugLog('Entity updated via inline edit:', category, entityId);
+        }
+    }
+
+    currentEditCard = null;
+    renderMemoryUI();
+}
+
+function readInlineFields($card, category, existingFields) {
     const parseCSV = (val) => val ? val.split(',').map(s => s.trim()).filter(Boolean) : [];
+    const defs = FIELD_DEFS[category] || [];
+    // Start from a clone of existing fields to preserve any fields we don't have defs for
+    const fields = JSON.parse(JSON.stringify(existingFields || {}));
 
-    switch (category) {
-        case 'characters': {
-            const relsText = $('#rp_mem_edit_relationships').val() || '';
-            const relationships = relsText.split('\n').filter(Boolean).map(line => {
-                const [target, ...natureParts] = line.split(':');
-                return { target: target.trim(), nature: natureParts.join(':').trim() };
-            }).filter(r => r.target && r.nature);
+    for (const def of defs) {
+        const $input = $card.find(`[data-edit-field="${def.key}"]`);
+        if (!$input.length) continue;
 
-            return {
-                description: $('#rp_mem_edit_description').val() || '',
-                personality: $('#rp_mem_edit_personality').val() || '',
-                status: $('#rp_mem_edit_status').val() || '',
-                relationships,
-            };
+        let value;
+        switch (def.type) {
+            case 'textarea':
+            case 'text':
+            case 'select':
+                value = $input.val() || '';
+                break;
+            case 'csv':
+                value = parseCSV($input.val());
+                break;
+            case 'number':
+                value = parseInt($input.val()) || 0;
+                break;
+            case 'relationships': {
+                const text = $input.val() || '';
+                value = text.split('\n').filter(Boolean).map(line => {
+                    const [target, ...natureParts] = line.split(':');
+                    return { target: target.trim(), nature: natureParts.join(':').trim() };
+                }).filter(r => r.target && r.nature);
+                break;
+            }
+            default:
+                value = $input.val() || '';
         }
-        case 'locations':
-            return {
-                description: $('#rp_mem_edit_description').val() || '',
-                atmosphere: $('#rp_mem_edit_atmosphere').val() || '',
-                notableFeatures: parseCSV($('#rp_mem_edit_notableFeatures').val()),
-                connections: parseCSV($('#rp_mem_edit_connections').val()),
-            };
-        case 'mainCharacter':
-            return {
-                description: $('#rp_mem_edit_description').val() || '',
-                skills: parseCSV($('#rp_mem_edit_skills').val()),
-                inventory: parseCSV($('#rp_mem_edit_inventory').val()),
-                status: {
-                    health: $('#rp_mem_edit_health').val() || '',
-                    conditions: parseCSV($('#rp_mem_edit_conditions').val()),
-                    buffs: parseCSV($('#rp_mem_edit_buffs').val()),
-                },
-            };
-        case 'goals':
-            return {
-                description: $('#rp_mem_edit_description').val() || '',
-                progress: $('#rp_mem_edit_progress').val() || '',
-                blockers: $('#rp_mem_edit_blockers').val() || '',
-                status: $('#rp_mem_edit_goal_status').val() || 'in_progress',
-            };
-        case 'events':
-            return {
-                description: $('#rp_mem_edit_description').val() || '',
-                turn: parseInt($('#rp_mem_edit_turn').val()) || 0,
-                involvedEntities: parseCSV($('#rp_mem_edit_involvedEntities').val()),
-                consequences: $('#rp_mem_edit_consequences').val() || '',
-                significance: $('#rp_mem_edit_significance').val() || '',
-            };
-        default:
-            return {};
+
+        setFieldValue(fields, def.key, value);
     }
+
+    return fields;
 }
 
 // ===================== Entity Actions =====================
@@ -749,7 +1033,9 @@ async function clearAllMemory() {
  */
 async function onNewMessage() {
     const settings = getSettings();
-    if (!settings.enabled || !settings.apiKey) return;
+    if (!settings.enabled) return;
+    const apiKey = await resolveApiKey();
+    if (!apiKey) return;
 
     const context = getContext();
     if (!context.chat?.length) return;
@@ -816,9 +1102,9 @@ async function triggerExtraction(context) {
 }
 
 async function testConnection() {
-    const s = getSettings();
-    if (!s.apiKey) {
-        toastr.warning('Please enter an OpenRouter API key first');
+    const apiKey = await resolveApiKey();
+    if (!apiKey) {
+        toastr.warning('Please configure an OpenRouter API key');
         return;
     }
 
@@ -842,7 +1128,8 @@ async function forceExtract() {
         toastr.warning('RP Memory is disabled');
         return;
     }
-    if (!s.apiKey) {
+    const apiKey = await resolveApiKey();
+    if (!apiKey) {
         toastr.warning('Please configure an OpenRouter API key in Settings');
         return;
     }
@@ -862,6 +1149,232 @@ function showExtractionIndicator(visible) {
     } else {
         $('#rp_memory_status').hide();
     }
+}
+
+// ===================== Dynamic Model List =====================
+
+async function loadModelList(forceRefresh = false) {
+    if (cachedModelList && !forceRefresh) {
+        populateModelDropdown(cachedModelList);
+        return;
+    }
+
+    const $select = $('#rp_memory_model');
+    const currentVal = $select.val() || getSettings().model;
+    $select.html('<option value="">-- Loading models... --</option>');
+
+    try {
+        const models = await apiClient.fetchModels();
+        cachedModelList = models;
+        populateModelDropdown(models, currentVal);
+        debugLog(`Loaded ${models.length} models from OpenRouter`);
+    } catch (err) {
+        console.error('[RP Memory] Failed to fetch models:', err);
+        // Fall back: keep whatever is currently selected
+        $select.html(`<option value="${escapeHtml(currentVal)}">${escapeHtml(currentVal)}</option>`);
+        toastr.warning('Could not load model list from OpenRouter');
+    }
+}
+
+function populateModelDropdown(models, preserveValue) {
+    const $select = $('#rp_memory_model');
+    const currentVal = preserveValue || $select.val() || getSettings().model;
+    $select.empty();
+
+    for (const model of models) {
+        const pricePerMillion = parseFloat(model.promptPrice || 0) * 1_000_000;
+        const priceStr = pricePerMillion < 0.01 ? 'free' : `$${pricePerMillion.toFixed(2)}/1M`;
+        const label = `${model.name} (${priceStr})`;
+        $select.append(`<option value="${escapeHtml(model.id)}">${escapeHtml(label)}</option>`);
+    }
+
+    // Restore previous selection if it exists in the list
+    if (currentVal && $select.find(`option[value="${CSS.escape(currentVal)}"]`).length) {
+        $select.val(currentVal);
+    } else if (models.length > 0) {
+        // If the saved model isn't in the list, add it at top so we don't lose the setting
+        if (currentVal) {
+            $select.prepend(`<option value="${escapeHtml(currentVal)}">${escapeHtml(currentVal)} (saved)</option>`);
+            $select.val(currentVal);
+        }
+    }
+}
+
+// ===================== Embedding Model List =====================
+
+async function loadEmbeddingModelList(forceRefresh = false) {
+    if (cachedEmbeddingModelList && !forceRefresh) {
+        populateEmbeddingModelDropdown(cachedEmbeddingModelList);
+        return;
+    }
+
+    const $select = $('#rp_memory_embedding_model');
+    const currentVal = $select.val() || getSettings().embeddingModel;
+    $select.html('<option value="">-- Loading embedding models... --</option>');
+
+    try {
+        const models = await apiClient.fetchEmbeddingModels();
+        cachedEmbeddingModelList = models;
+        populateEmbeddingModelDropdown(models, currentVal);
+        debugLog(`Loaded ${models.length} embedding models from OpenRouter`);
+    } catch (err) {
+        console.error('[RP Memory] Failed to fetch embedding models:', err);
+        $select.html(`<option value="${escapeHtml(currentVal)}">${escapeHtml(currentVal)}</option>`);
+        toastr.warning('Could not load embedding model list from OpenRouter');
+    }
+}
+
+function populateEmbeddingModelDropdown(models, preserveValue) {
+    const $select = $('#rp_memory_embedding_model');
+    const currentVal = preserveValue || $select.val() || getSettings().embeddingModel;
+    $select.empty();
+
+    for (const model of models) {
+        const pricePerMillion = parseFloat(model.promptPrice || 0) * 1_000_000;
+        const priceStr = pricePerMillion < 0.01 ? 'free' : `$${pricePerMillion.toFixed(2)}/1M`;
+        const label = `${model.name} (${priceStr})`;
+        $select.append(`<option value="${escapeHtml(model.id)}">${escapeHtml(label)}</option>`);
+    }
+
+    if (currentVal && $select.find(`option[value="${CSS.escape(currentVal)}"]`).length) {
+        $select.val(currentVal);
+    } else if (models.length > 0) {
+        if (currentVal) {
+            $select.prepend(`<option value="${escapeHtml(currentVal)}">${escapeHtml(currentVal)} (saved)</option>`);
+            $select.val(currentVal);
+        }
+    }
+}
+
+// ===================== Floating Panel =====================
+
+const PANEL_ID = 'rpMemoryPanel';
+
+function openMemoryPanel() {
+    // If already open, just focus it
+    if ($(`#${PANEL_ID}`).length) {
+        debugLog('Panel already open');
+        return;
+    }
+
+    const template = $('#generic_draggable_template').html();
+    const $panel = $(template);
+
+    $panel.attr('id', PANEL_ID);
+    $panel.find('.drag-grabber').attr('id', `${PANEL_ID}header`);
+    $panel.find('.dragTitle').text('RP Memory');
+    $panel.addClass('rp-mem-panel');
+
+    // Build panel content
+    const $content = $('<div class="rp-mem-panel-content"></div>');
+
+    // Category sections (mirrors the sidebar)
+    const categories = [
+        { key: 'mainCharacter', icon: 'fa-user', label: 'Main Character' },
+        { key: 'characters', icon: 'fa-users', label: 'Characters (NPCs)' },
+        { key: 'locations', icon: 'fa-map-location-dot', label: 'Locations' },
+        { key: 'goals', icon: 'fa-bullseye', label: 'Goals / Tasks' },
+        { key: 'events', icon: 'fa-timeline', label: 'Events' },
+    ];
+
+    for (const cat of categories) {
+        $content.append(`
+            <div class="rp-mem-category" data-category="${cat.key}">
+                <div class="rp-mem-category-header" data-category="${cat.key}">
+                    <i class="fa-solid ${cat.icon}"></i>
+                    <span>${cat.label}</span>
+                    <span class="rp-mem-category-count" data-category="${cat.key}">0</span>
+                    <div class="menu_button menu_button_icon rp-mem-add-btn" data-category="${cat.key}" title="Add">
+                        <i class="fa-solid fa-plus"></i>
+                    </div>
+                </div>
+                <div class="rp-mem-category-body" id="rp_mem_panel_cat_${cat.key}"></div>
+            </div>
+        `);
+    }
+
+    // Actions bar
+    $content.append(`
+        <div class="rp-mem-actions">
+            <div class="menu_button menu_button_icon rp-mem-panel-extract-btn">
+                <i class="fa-solid fa-wand-magic-sparkles"></i>
+                <span>Extract Now</span>
+            </div>
+            <span class="rp-mem-panel-token-count rp-mem-token-count"></span>
+        </div>
+    `);
+
+    $panel.append($content);
+
+    // Close handler
+    $panel.find('.dragClose').on('click', closeMemoryPanel);
+
+    // Extract button in panel
+    $panel.on('click', '.rp-mem-panel-extract-btn', forceExtract);
+
+    // Append to movingDivs
+    $('#movingDivs').append($panel);
+
+    // Initialize dragging
+    loadMovingUIState();
+    dragElement($panel);
+
+    // Render panel content
+    renderPanelUI();
+
+    debugLog('Memory panel opened');
+}
+
+function closeMemoryPanel() {
+    $(`#${PANEL_ID}`).remove();
+    debugLog('Memory panel closed');
+}
+
+function isMemoryPanelOpen() {
+    return $(`#${PANEL_ID}`).length > 0;
+}
+
+function renderPanelUI() {
+    if (!isMemoryPanelOpen()) return;
+
+    const counts = memoryStore.getCounts();
+
+    // Update counts in panel
+    const $panel = $(`#${PANEL_ID}`);
+    for (const [cat, count] of Object.entries(counts)) {
+        $panel.find(`.rp-mem-category-count[data-category="${cat}"]`).text(count);
+    }
+
+    // Render each category in panel
+    const allCategories = ['mainCharacter', 'characters', 'locations', 'goals', 'events'];
+    for (const category of allCategories) {
+        const $container = $(`#rp_mem_panel_cat_${category}`);
+        $container.empty();
+
+        const entities = memoryStore.getAllEntities(category);
+        const entityList = Object.values(entities);
+
+        if (entityList.length === 0) {
+            $container.append('<div class="rp-mem-empty-state">No entries yet</div>');
+            continue;
+        }
+
+        entityList.sort((a, b) => (a.tier - b.tier) || (b.importance - a.importance));
+
+        for (const entity of entityList) {
+            $container.append(renderEntityCard(category, entity));
+        }
+    }
+
+    // Update token count in panel
+    const tokens = injector.getTokenCount(memoryStore);
+    const budget = getSettings().tokenBudget;
+    let countText = `~${tokens} tokens`;
+    if (budget > 0) {
+        countText += ` / ${budget}`;
+        if (tokens > budget) countText += ' (OVER BUDGET)';
+    }
+    $panel.find('.rp-mem-panel-token-count').text(countText);
 }
 
 // ===================== Utilities =====================
@@ -895,8 +1408,10 @@ jQuery(async function () {
         memoryStore = new MemoryStore();
         injector = new PromptInjector(() => getSettings());
         apiClient = new OpenRouterClient(() => getSettings());
+        apiClient.setKeyResolver(resolveApiKey);
         decayEngine = new DecayEngine(() => getSettings());
         pipeline = new ExtractionPipeline(apiClient, memoryStore, () => getSettings());
+        embeddingService = new EmbeddingService(apiClient, () => getSettings());
 
         // Sync UI
         syncUIFromSettings();
@@ -912,6 +1427,12 @@ jQuery(async function () {
         eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, onNewMessage);
         eventSource.on(event_types.MESSAGE_DELETED, () => { lastProcessedLength = getContext().chat?.length || 0; });
         eventSource.on(event_types.MESSAGE_UPDATED, () => { injectMemoryPrompt(); });
+
+        // Load model lists (non-blocking)
+        loadModelList().catch(err => console.warn('[RP Memory] Initial model load failed:', err));
+        if (getSettings().embeddingsEnabled) {
+            loadEmbeddingModelList().catch(err => console.warn('[RP Memory] Initial embedding model load failed:', err));
+        }
 
         // Load initial state
         onChatChanged();

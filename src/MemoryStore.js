@@ -26,6 +26,8 @@ export class MemoryStore {
             this._state = deepClone(savedState);
             // Ensure extractionInProgress is reset on load (in case of crash mid-extraction)
             this._state.extractionInProgress = false;
+            // Remove embedding data — managed separately by EmbeddingService
+            delete this._state._embeddings;
         } else {
             this._state = this._createEmptyState();
         }
