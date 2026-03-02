@@ -3,9 +3,9 @@ import { eventSource, event_types, extension_prompt_types, extension_prompt_role
 import { extension_settings, getContext, renderExtensionTemplateAsync,
     saveMetadataDebounced } from '../../../extensions.js';
 import { Popup, POPUP_RESULT } from '../../../popup.js';
-import { dragElement } from '../../RossAscends-mods.js';
-import { loadMovingUIState } from '../../power-user.js';
-import { SECRET_KEYS, secret_state, findSecret } from '../../../../secrets.js';
+import { dragElement } from '../../../RossAscends-mods.js';
+import { loadMovingUIState } from '../../../power-user.js';
+import { SECRET_KEYS, secret_state, findSecret } from '../../../secrets.js';
 import { MemoryStore } from './src/MemoryStore.js';
 import { PromptInjector } from './src/PromptInjector.js';
 import { ExtractionPipeline } from './src/ExtractionPipeline.js';
