@@ -3,8 +3,6 @@ import { eventSource, event_types, extension_prompt_types, extension_prompt_role
 import { extension_settings, getContext, renderExtensionTemplateAsync,
     saveMetadataDebounced } from '../../../extensions.js';
 import { Popup, POPUP_RESULT } from '../../../popup.js';
-import { dragElement } from '../../../RossAscends-mods.js';
-import { loadMovingUIState } from '../../../power-user.js';
 import { SECRET_KEYS, secret_state, findSecret } from '../../../secrets.js';
 import { MemoryStore } from './src/MemoryStore.js';
 import { PromptInjector } from './src/PromptInjector.js';
@@ -48,6 +46,7 @@ let lastProcessedLength = 0;
 let cachedModelList = null;
 let cachedEmbeddingModelList = null;
 let cachedSTKey = null; // Cached SillyTavern API key for the session
+let activePanelCategory = null; // Currently shown category in floating data panel
 
 // ===================== Settings =====================
 
@@ -247,9 +246,6 @@ function bindSettingsListeners() {
 
     // Clear all
     $('#rp_memory_clear_all').on('click', clearAllMemory);
-
-    // Open floating panel
-    $('#rp_memory_open_panel').on('click', openMemoryPanel);
 
     // Refresh models button
     $('#rp_memory_refresh_models').on('click', () => loadModelList(true));
@@ -491,8 +487,11 @@ function renderMemoryUI() {
 
     renderConflicts();
 
-    // Also update floating panel if open
-    renderPanelUI();
+    // Also update floating nav counts + active panel
+    updateFloatingNavCounts();
+    if (activePanelCategory) {
+        renderPanelCards(activePanelCategory);
+    }
 }
 
 function renderCategoryEntities(category) {
@@ -1246,135 +1245,524 @@ function populateEmbeddingModelDropdown(models, preserveValue) {
     }
 }
 
-// ===================== Floating Panel =====================
+// ===================== Floating Nav + Data Panel =====================
 
-const PANEL_ID = 'rpMemoryPanel';
+const CATEGORY_DEFS = [
+    { key: 'mainCharacter', icon: 'fa-user', label: 'MC' },
+    { key: 'characters', icon: 'fa-users', label: 'NPCs' },
+    { key: 'locations', icon: 'fa-map-location-dot', label: 'Loc' },
+    { key: 'goals', icon: 'fa-bullseye', label: 'Goals' },
+    { key: 'events', icon: 'fa-timeline', label: 'Events' },
+];
 
-function openMemoryPanel() {
-    // If already open, just focus it
-    if ($(`#${PANEL_ID}`).length) {
-        debugLog('Panel already open');
+const CATEGORY_LABELS = {
+    mainCharacter: 'Main Character',
+    characters: 'Characters (NPCs)',
+    locations: 'Locations',
+    goals: 'Goals / Tasks',
+    events: 'Events',
+};
+
+/**
+ * Initialize the bottom-docked floating UI (nav bar + data panel).
+ * Inserted into #sheld before #form_sheld.
+ */
+function initFloatingUI() {
+    // Don't double-init
+    if ($('.rp-mem-wrapper').length) return;
+
+    const counts = memoryStore ? memoryStore.getCounts() : {};
+
+    // Build category buttons
+    const catButtons = CATEGORY_DEFS.map(cat => {
+        const count = counts[cat.key] || 0;
+        return `<div class="rp-mem-nav-btn" data-category="${cat.key}" title="${CATEGORY_LABELS[cat.key]}">
+            <i class="fa-solid ${cat.icon}"></i>
+            <span>${cat.label}</span>
+            <span class="rp-mem-nav-count" data-nav-count="${cat.key}">${count}</span>
+        </div>`;
+    }).join('');
+
+    const html = `
+    <div class="rp-mem-wrapper">
+        <div class="rp-mem-data-panel hidden"></div>
+        <div class="rp-mem-nav collapsed">
+            <i class="fa-solid fa-chevron-up rp-mem-nav-collapse-btn" title="Expand / Collapse"></i>
+            <span class="rp-mem-nav-pill-label">RP Memory</span>
+            <div class="rp-mem-nav-buttons">${catButtons}</div>
+            <div class="rp-mem-nav-sep"></div>
+            <div class="rp-mem-nav-actions">
+                <div class="rp-mem-nav-btn rp-mem-nav-extract-btn" title="Extract Now">
+                    <i class="fa-solid fa-wand-magic-sparkles"></i>
+                    <span>Extract</span>
+                </div>
+                <div class="rp-mem-nav-btn rp-mem-nav-settings-btn" title="Open Settings">
+                    <i class="fa-solid fa-gear"></i>
+                </div>
+            </div>
+        </div>
+    </div>`;
+
+    const $sheld = $('#sheld');
+    const $formSheld = $('#form_sheld');
+
+    if ($formSheld.length) {
+        $formSheld.before(html);
+    } else {
+        $sheld.append(html);
+    }
+
+    // Bind nav events
+    bindFloatingNavListeners();
+
+    debugLog('Floating UI initialized (collapsed)');
+}
+
+function bindFloatingNavListeners() {
+    const $wrapper = $('.rp-mem-wrapper');
+
+    // Collapse/expand toggle — clicking pill label or collapse button
+    $wrapper.on('click', '.rp-mem-nav.collapsed', function (e) {
+        // Clicking anywhere on the collapsed pill expands it
+        toggleNavCollapse();
+    });
+
+    $wrapper.on('click', '.rp-mem-nav-collapse-btn', function (e) {
+        e.stopPropagation();
+        toggleNavCollapse();
+    });
+
+    // Category button click
+    $wrapper.on('click', '.rp-mem-nav-btn[data-category]', function (e) {
+        e.stopPropagation();
+        const category = $(this).data('category');
+        showCategoryPanel(category);
+    });
+
+    // Extract button
+    $wrapper.on('click', '.rp-mem-nav-extract-btn', function (e) {
+        e.stopPropagation();
+        forceExtract();
+    });
+
+    // Settings button — open sidebar drawer
+    $wrapper.on('click', '.rp-mem-nav-settings-btn', function (e) {
+        e.stopPropagation();
+        // Open the extensions panel and scroll to our section
+        const $drawer = $('#rp_memory_settings .inline-drawer-toggle');
+        if ($drawer.length) {
+            // Open extensions panel if not already open
+            if (!$('#extensions_settings2').is(':visible')) {
+                $('#extensionsMenuButton').trigger('click');
+            }
+            // Expand our drawer
+            setTimeout(() => {
+                if (!$drawer.parent().find('.inline-drawer-content').is(':visible')) {
+                    $drawer.trigger('click');
+                }
+                $drawer[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }, 200);
+        }
+    });
+
+    // Card click (in data panel) → open edit overlay
+    $wrapper.on('click', '.rp-mem-card', function () {
+        const category = $(this).data('category');
+        const entityId = $(this).data('id');
+        openCardEditOverlay(category, entityId);
+    });
+
+    // Add button in data panel
+    $wrapper.on('click', '.rp-mem-panel-add-btn', function (e) {
+        e.stopPropagation();
+        const category = $(this).data('category');
+        openAddEntityDialog(category);
+    });
+}
+
+function toggleNavCollapse() {
+    const $nav = $('.rp-mem-nav');
+    const isCollapsed = $nav.hasClass('collapsed');
+
+    if (isCollapsed) {
+        $nav.removeClass('collapsed');
+    } else {
+        $nav.addClass('collapsed');
+        // Also hide the data panel
+        hideDataPanel();
+    }
+}
+
+function showCategoryPanel(category) {
+    const $panel = $('.rp-mem-data-panel');
+
+    if (activePanelCategory === category) {
+        // Toggle off
+        hideDataPanel();
         return;
     }
 
-    const template = $('#generic_draggable_template').html();
-    const $panel = $(template);
+    // Deactivate previous button, activate new one
+    $('.rp-mem-nav-btn[data-category]').removeClass('active');
+    $(`.rp-mem-nav-btn[data-category="${category}"]`).addClass('active');
 
-    $panel.attr('id', PANEL_ID);
-    $panel.find('.drag-grabber').attr('id', `${PANEL_ID}header`);
-    $panel.find('.dragTitle').text('RP Memory');
-    $panel.addClass('rp-mem-panel');
-
-    // Build panel content
-    const $content = $('<div class="rp-mem-panel-content"></div>');
-
-    // Category sections (mirrors the sidebar)
-    const categories = [
-        { key: 'mainCharacter', icon: 'fa-user', label: 'Main Character' },
-        { key: 'characters', icon: 'fa-users', label: 'Characters (NPCs)' },
-        { key: 'locations', icon: 'fa-map-location-dot', label: 'Locations' },
-        { key: 'goals', icon: 'fa-bullseye', label: 'Goals / Tasks' },
-        { key: 'events', icon: 'fa-timeline', label: 'Events' },
-    ];
-
-    for (const cat of categories) {
-        $content.append(`
-            <div class="rp-mem-category" data-category="${cat.key}">
-                <div class="rp-mem-category-header" data-category="${cat.key}">
-                    <i class="fa-solid ${cat.icon}"></i>
-                    <span>${cat.label}</span>
-                    <span class="rp-mem-category-count" data-category="${cat.key}">0</span>
-                    <div class="menu_button menu_button_icon rp-mem-add-btn" data-category="${cat.key}" title="Add">
-                        <i class="fa-solid fa-plus"></i>
-                    </div>
-                </div>
-                <div class="rp-mem-category-body" id="rp_mem_panel_cat_${cat.key}"></div>
-            </div>
-        `);
-    }
-
-    // Actions bar
-    $content.append(`
-        <div class="rp-mem-actions">
-            <div class="menu_button menu_button_icon rp-mem-panel-extract-btn">
-                <i class="fa-solid fa-wand-magic-sparkles"></i>
-                <span>Extract Now</span>
-            </div>
-            <span class="rp-mem-panel-token-count rp-mem-token-count"></span>
-        </div>
-    `);
-
-    $panel.append($content);
-
-    // Close handler
-    $panel.find('.dragClose').on('click', closeMemoryPanel);
-
-    // Extract button in panel
-    $panel.on('click', '.rp-mem-panel-extract-btn', forceExtract);
-
-    // Append to movingDivs
-    $('#movingDivs').append($panel);
-
-    // Initialize dragging
-    loadMovingUIState();
-    dragElement($panel);
-
-    // Render panel content
-    renderPanelUI();
-
-    debugLog('Memory panel opened');
+    activePanelCategory = category;
+    renderPanelCards(category);
+    $panel.removeClass('hidden');
 }
 
-function closeMemoryPanel() {
-    $(`#${PANEL_ID}`).remove();
-    debugLog('Memory panel closed');
+function hideDataPanel() {
+    $('.rp-mem-data-panel').addClass('hidden');
+    $('.rp-mem-nav-btn[data-category]').removeClass('active');
+    activePanelCategory = null;
 }
 
-function isMemoryPanelOpen() {
-    return $(`#${PANEL_ID}`).length > 0;
-}
+function renderPanelCards(category) {
+    const $panel = $('.rp-mem-data-panel');
+    $panel.empty();
 
-function renderPanelUI() {
-    if (!isMemoryPanelOpen()) return;
+    const title = CATEGORY_LABELS[category] || category;
+    $panel.append(`<div class="rp-mem-data-panel-title">${escapeHtml(title)}</div>`);
 
-    const counts = memoryStore.getCounts();
+    const entities = memoryStore.getAllEntities(category);
+    const entityList = Object.values(entities);
 
-    // Update counts in panel
-    const $panel = $(`#${PANEL_ID}`);
-    for (const [cat, count] of Object.entries(counts)) {
-        $panel.find(`.rp-mem-category-count[data-category="${cat}"]`).text(count);
-    }
-
-    // Render each category in panel
-    const allCategories = ['mainCharacter', 'characters', 'locations', 'goals', 'events'];
-    for (const category of allCategories) {
-        const $container = $(`#rp_mem_panel_cat_${category}`);
-        $container.empty();
-
-        const entities = memoryStore.getAllEntities(category);
-        const entityList = Object.values(entities);
-
-        if (entityList.length === 0) {
-            $container.append('<div class="rp-mem-empty-state">No entries yet</div>');
-            continue;
-        }
-
+    if (entityList.length === 0) {
+        $panel.append('<div class="rp-mem-empty-state">No entries yet</div>');
+    } else {
+        // Sort: pinned (tier 1) first, then by importance descending
         entityList.sort((a, b) => (a.tier - b.tier) || (b.importance - a.importance));
 
+        const $grid = $('<div class="rp-mem-card-grid"></div>');
         for (const entity of entityList) {
-            $container.append(renderEntityCard(category, entity));
+            $grid.append(buildCardHtml(category, entity));
+        }
+        $panel.append($grid);
+    }
+
+    // Add button
+    $panel.append(`
+        <div class="rp-mem-panel-add-btn" data-category="${category}">
+            <i class="fa-solid fa-plus"></i>
+            <span>Add ${escapeHtml(title)}</span>
+        </div>
+    `);
+}
+
+function buildCardHtml(category, entity) {
+    const tierLabel = { 1: 'Pinned', 2: 'Active', 3: 'Archived' };
+    const tierClass = entity.tier === 1 ? 'tier-pinned' : (entity.tier === 3 ? 'tier-archived' : '');
+
+    // Build grid items from fields
+    let gridItems = '';
+    if (entity.fields) {
+        for (const [key, value] of Object.entries(entity.fields)) {
+            if (value === null || value === undefined || value === '') continue;
+
+            const label = key.charAt(0).toUpperCase() + key.slice(1).replace(/([A-Z])/g, ' $1');
+            let displayVal = '';
+
+            if (Array.isArray(value)) {
+                if (value.length === 0) continue;
+                if (typeof value[0] === 'object' && value[0] !== null) {
+                    displayVal = value.map(v => v.target ? `${v.target}: ${v.nature || ''}` : JSON.stringify(v)).join(', ');
+                } else {
+                    displayVal = value.join(', ');
+                }
+            } else if (typeof value === 'object') {
+                // Nested object (e.g. status for mainCharacter)
+                const parts = [];
+                for (const [sk, sv] of Object.entries(value)) {
+                    if (!sv || (Array.isArray(sv) && sv.length === 0)) continue;
+                    parts.push(`${sk}: ${Array.isArray(sv) ? sv.join(', ') : sv}`);
+                }
+                if (parts.length === 0) continue;
+                displayVal = parts.join('; ');
+            } else {
+                displayVal = String(value);
+            }
+
+            if (!displayVal) continue;
+
+            gridItems += `
+                <div class="rp-mem-grid-item">
+                    <div class="rp-mem-grid-item-label">${escapeHtml(label)}</div>
+                    <div class="rp-mem-grid-item-value" title="${escapeHtml(displayVal)}">${escapeHtml(displayVal)}</div>
+                </div>`;
         }
     }
 
-    // Update token count in panel
-    const tokens = injector.getTokenCount(memoryStore);
-    const budget = getSettings().tokenBudget;
-    let countText = `~${tokens} tokens`;
-    if (budget > 0) {
-        countText += ` / ${budget}`;
-        if (tokens > budget) countText += ' (OVER BUDGET)';
+    return `
+    <div class="rp-mem-card ${tierClass}" data-category="${category}" data-id="${entity.id}">
+        <div class="rp-mem-card-header">
+            <span class="rp-mem-card-name">${escapeHtml(entity.name)}</span>
+            <span class="rp-mem-card-tier">${tierLabel[entity.tier] || '?'}</span>
+            <span class="rp-mem-card-importance">${entity.importance}</span>
+        </div>
+        <div class="rp-mem-card-body">
+            ${gridItems || '<span class="rp-mem-empty-state" style="padding:4px;font-size:0.8em;">No details</span>'}
+        </div>
+    </div>`;
+}
+
+function updateFloatingNavCounts() {
+    if (!memoryStore) return;
+    const counts = memoryStore.getCounts();
+    for (const [cat, count] of Object.entries(counts)) {
+        $(`.rp-mem-nav-count[data-nav-count="${cat}"]`).text(count);
     }
-    $panel.find('.rp-mem-panel-token-count').text(countText);
+}
+
+/**
+ * Open a fullscreen edit overlay for an entity.
+ */
+function openCardEditOverlay(category, entityId) {
+    const entity = memoryStore.getEntity(category, entityId);
+    if (!entity) {
+        debugLog('Edit overlay: entity not found', category, entityId);
+        return;
+    }
+
+    // Remove existing overlay if any
+    $('.rp-mem-edit-overlay').remove();
+
+    const defs = FIELD_DEFS[category] || [];
+    const fields = entity.fields || {};
+
+    // Build field inputs
+    let fieldInputs = '';
+    for (const def of defs) {
+        const value = getFieldValue(fields, def.key);
+        let inputHtml = '';
+
+        switch (def.type) {
+            case 'textarea': {
+                const val = value || '';
+                inputHtml = `<textarea data-edit-field="${def.key}">${escapeHtml(val)}</textarea>`;
+                break;
+            }
+            case 'text': {
+                const val = value || '';
+                inputHtml = `<input type="text" data-edit-field="${def.key}" value="${escapeHtml(val)}" />`;
+                break;
+            }
+            case 'csv': {
+                const val = Array.isArray(value) ? value.join(', ') : (value || '');
+                inputHtml = `<input type="text" data-edit-field="${def.key}" value="${escapeHtml(val)}" />`;
+                break;
+            }
+            case 'number': {
+                const val = value || 0;
+                inputHtml = `<input type="number" data-edit-field="${def.key}" value="${val}" />`;
+                break;
+            }
+            case 'select': {
+                const opts = (def.options || []).map(o =>
+                    `<option value="${o.value}" ${value === o.value ? 'selected' : ''}>${escapeHtml(o.label)}</option>`,
+                ).join('');
+                inputHtml = `<select data-edit-field="${def.key}">${opts}</select>`;
+                break;
+            }
+            case 'relationships': {
+                const rels = Array.isArray(value) ? value : [];
+                const val = rels.map(r => `${r.target}: ${r.nature}`).join('\n');
+                inputHtml = `<textarea data-edit-field="${def.key}">${escapeHtml(val)}</textarea>`;
+                break;
+            }
+        }
+
+        fieldInputs += `
+            <div class="rp-mem-edit-dialog-row">
+                <label>${escapeHtml(def.label)}</label>
+                ${inputHtml}
+            </div>`;
+    }
+
+    const overlayHtml = `
+    <div class="rp-mem-edit-overlay">
+        <div class="rp-mem-edit-dialog" data-category="${category}" data-id="${entityId}">
+            <div class="rp-mem-edit-dialog-title">${escapeHtml(entity.name)}</div>
+
+            <div class="rp-mem-edit-dialog-meta">
+                <div class="rp-mem-edit-dialog-row">
+                    <label>Name</label>
+                    <input type="text" class="rp-mem-overlay-name" value="${escapeHtml(entity.name)}" />
+                </div>
+                <div class="rp-mem-edit-dialog-row">
+                    <label>Tier</label>
+                    <select class="rp-mem-overlay-tier">
+                        <option value="1" ${entity.tier === 1 ? 'selected' : ''}>Pinned</option>
+                        <option value="2" ${entity.tier === 2 ? 'selected' : ''}>Active</option>
+                        <option value="3" ${entity.tier === 3 ? 'selected' : ''}>Archived</option>
+                    </select>
+                </div>
+                <div class="rp-mem-edit-dialog-row">
+                    <label>Importance</label>
+                    <input type="number" class="rp-mem-overlay-importance" min="1" max="10" step="0.5" value="${entity.importance}" />
+                </div>
+            </div>
+
+            ${fieldInputs}
+
+            <div class="rp-mem-edit-dialog-actions">
+                <div class="menu_button rp-mem-dialog-save"><i class="fa-solid fa-check"></i> Save</div>
+                <div class="menu_button rp-mem-dialog-cancel"><i class="fa-solid fa-xmark"></i> Cancel</div>
+                <div class="menu_button rp-mem-dialog-delete"><i class="fa-solid fa-trash"></i> Delete</div>
+            </div>
+        </div>
+    </div>`;
+
+    $('body').append(overlayHtml);
+
+    // Focus name input
+    $('.rp-mem-overlay-name').focus().select();
+
+    // Bind overlay events
+    bindEditOverlayListeners();
+}
+
+function bindEditOverlayListeners() {
+    const $overlay = $('.rp-mem-edit-overlay');
+
+    // Save
+    $overlay.on('click', '.rp-mem-dialog-save', function () {
+        saveOverlayEdits();
+    });
+
+    // Cancel
+    $overlay.on('click', '.rp-mem-dialog-cancel', function () {
+        closeEditOverlay();
+    });
+
+    // Delete
+    $overlay.on('click', '.rp-mem-dialog-delete', async function () {
+        const $dialog = $('.rp-mem-edit-dialog');
+        const category = $dialog.data('category');
+        const entityId = $dialog.data('id');
+        const entity = memoryStore.getEntity(category, entityId);
+        if (!entity) return;
+
+        const result = await Popup.show.confirm(
+            `Delete "${escapeHtml(entity.name)}"?`,
+            'This will remove the entity from memory.',
+        );
+
+        if (result === POPUP_RESULT.AFFIRMATIVE) {
+            memoryStore.deleteEntity(category, entityId);
+            saveMemoryState();
+            injectMemoryPrompt();
+            renderMemoryUI();
+            closeEditOverlay();
+        }
+    });
+
+    // Backdrop click
+    $overlay.on('click', function (e) {
+        if ($(e.target).is('.rp-mem-edit-overlay')) {
+            closeEditOverlay();
+        }
+    });
+
+    // Escape key
+    $(document).on('keydown.rpMemOverlay', function (e) {
+        if (e.key === 'Escape' && $('.rp-mem-edit-overlay').length) {
+            closeEditOverlay();
+        }
+    });
+}
+
+function saveOverlayEdits() {
+    const $dialog = $('.rp-mem-edit-dialog');
+    const category = $dialog.data('category');
+    const entityId = $dialog.data('id');
+    const entity = memoryStore.getEntity(category, entityId);
+    if (!entity) return;
+
+    const updatedName = $dialog.find('.rp-mem-overlay-name').val()?.trim() || entity.name;
+    const updatedTier = parseInt($dialog.find('.rp-mem-overlay-tier').val()) || entity.tier;
+    const updatedImportance = parseFloat($dialog.find('.rp-mem-overlay-importance').val()) || entity.importance;
+    const updatedFields = readOverlayFields($dialog, category, entity.fields);
+
+    // Handle name change (requires ID change)
+    if (updatedName !== entity.name && category !== 'mainCharacter') {
+        const newId = generateId(updatedName);
+        memoryStore.deleteEntity(category, entity.id);
+        memoryStore.addEntity(category, {
+            ...entity,
+            id: newId,
+            name: updatedName,
+            tier: updatedTier,
+            importance: updatedImportance,
+            baseScore: updatedImportance,
+            fields: updatedFields,
+            source: 'manual',
+        });
+    } else {
+        memoryStore.updateEntity(category, entityId, {
+            name: updatedName,
+            tier: updatedTier,
+            importance: updatedImportance,
+            baseScore: updatedImportance,
+            fields: updatedFields,
+            source: 'manual',
+        });
+    }
+
+    // Invalidate embedding cache
+    if (embeddingService) {
+        embeddingService.invalidateEntity(category, entityId);
+    }
+
+    saveMemoryState();
+    injectMemoryPrompt();
+    renderMemoryUI();
+    closeEditOverlay();
+    debugLog('Entity updated via overlay edit:', category, entityId);
+}
+
+function readOverlayFields($dialog, category, existingFields) {
+    const parseCSV = (val) => val ? val.split(',').map(s => s.trim()).filter(Boolean) : [];
+    const defs = FIELD_DEFS[category] || [];
+    const fields = JSON.parse(JSON.stringify(existingFields || {}));
+
+    for (const def of defs) {
+        const $input = $dialog.find(`[data-edit-field="${def.key}"]`);
+        if (!$input.length) continue;
+
+        let value;
+        switch (def.type) {
+            case 'textarea':
+            case 'text':
+            case 'select':
+                value = $input.val() || '';
+                break;
+            case 'csv':
+                value = parseCSV($input.val());
+                break;
+            case 'number':
+                value = parseInt($input.val()) || 0;
+                break;
+            case 'relationships': {
+                const text = $input.val() || '';
+                value = text.split('\n').filter(Boolean).map(line => {
+                    const [target, ...natureParts] = line.split(':');
+                    return { target: target.trim(), nature: natureParts.join(':').trim() };
+                }).filter(r => r.target && r.nature);
+                break;
+            }
+            default:
+                value = $input.val() || '';
+        }
+
+        setFieldValue(fields, def.key, value);
+    }
+
+    return fields;
+}
+
+function closeEditOverlay() {
+    $('.rp-mem-edit-overlay').remove();
+    $(document).off('keydown.rpMemOverlay');
 }
 
 // ===================== Utilities =====================
@@ -1437,8 +1825,8 @@ jQuery(async function () {
         // Load initial state
         onChatChanged();
 
-        // Auto-open floating panel
-        openMemoryPanel();
+        // Initialize floating nav bar
+        initFloatingUI();
 
         console.log('[RP Memory] Extension loaded successfully');
     } catch (err) {

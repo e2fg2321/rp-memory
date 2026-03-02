@@ -405,34 +405,451 @@
     flex-shrink: 0;
 }
 
-/* ============ Floating Panel ============ */
-#rpMemoryPanel {
-    width: 350px;
-    min-width: 280px;
-    max-height: 80vh;
+/* ============ Floating Nav + Data Panel ============ */
+
+/* Wrapper: positioned inside #sheld before #form_sheld */
+.rp-mem-wrapper {
+    position: relative;
+    width: 100%;
+    z-index: 100;
     display: flex;
     flex-direction: column;
+    align-items: stretch;
+    padding: 0 8px 4px;
+    box-sizing: border-box;
 }
 
-.rp-mem-panel-content {
-    overflow-y: auto;
-    padding: 8px;
+/* --- Nav Bar --- */
+.rp-mem-nav {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px;
+    border-radius: 14px;
+    background: var(--SmartThemeBlurTintColor, rgba(20, 20, 30, 0.75));
+    backdrop-filter: blur(5px);
+    -webkit-backdrop-filter: blur(5px);
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.08));
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.35);
+    transition: all 0.3s ease;
+}
+
+/* Pill (collapsed) state */
+.rp-mem-nav.collapsed {
+    border-radius: 50px;
+    padding: 8px 20px;
+    align-self: center;
+    width: auto;
+    justify-content: center;
+    cursor: pointer;
+    gap: 8px;
+}
+
+.rp-mem-nav.collapsed .rp-mem-nav-buttons,
+.rp-mem-nav.collapsed .rp-mem-nav-actions,
+.rp-mem-nav.collapsed .rp-mem-nav-sep {
+    display: none;
+}
+
+.rp-mem-nav-pill-label {
+    font-size: 0.85em;
+    font-weight: 600;
+    opacity: 0.9;
+    white-space: nowrap;
+    pointer-events: none;
+}
+
+.rp-mem-nav:not(.collapsed) .rp-mem-nav-pill-label {
+    display: none;
+}
+
+.rp-mem-nav-collapse-btn {
+    cursor: pointer;
+    font-size: 0.85em;
+    opacity: 0.6;
+    transition: opacity 0.2s, transform 0.3s;
+    padding: 2px 4px;
+    flex-shrink: 0;
+}
+
+.rp-mem-nav-collapse-btn:hover {
+    opacity: 1;
+}
+
+.rp-mem-nav.collapsed .rp-mem-nav-collapse-btn {
+    transform: rotate(180deg);
+}
+
+/* Category + action button groups */
+.rp-mem-nav-buttons {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
     flex: 1;
-    max-height: calc(80vh - 40px);
 }
 
-.rp-mem-panel-content .rp-mem-category {
+.rp-mem-nav-sep {
+    width: 1px;
+    height: 24px;
+    background: var(--SmartThemeBorderColor, rgba(255,255,255,0.12));
+    flex-shrink: 0;
+}
+
+.rp-mem-nav-actions {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+/* Individual nav button */
+.rp-mem-nav-btn {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 5px 10px;
+    border-radius: 8px;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--SmartThemeBodyColor, #ccc);
+    font-size: 0.8em;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    white-space: nowrap;
+    user-select: none;
+}
+
+.rp-mem-nav-btn:hover {
+    background: var(--SmartThemeBorderColor, rgba(255,255,255,0.08));
+    transform: translateY(-2px);
+}
+
+.rp-mem-nav-btn.active {
+    background: var(--SmartThemeQuoteColor, rgba(136, 136, 200, 0.25));
+    border-color: var(--SmartThemeQuoteColor, rgba(136, 136, 200, 0.4));
+    color: var(--SmartThemeBodyColor, #fff);
+}
+
+.rp-mem-nav-btn .rp-mem-nav-count {
+    font-size: 0.8em;
+    opacity: 0.5;
+    min-width: 12px;
+    text-align: center;
+}
+
+.rp-mem-nav-btn.active .rp-mem-nav-count {
+    opacity: 0.8;
+}
+
+/* --- Data Panel (floats above nav) --- */
+.rp-mem-data-panel {
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 0;
+    right: 0;
+    max-height: 50vh;
+    overflow-y: auto;
+    border-radius: 12px;
+    background: var(--SmartThemeBlurTintColor, rgba(20, 20, 30, 0.85));
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.08));
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.45);
+    padding: 12px;
+    animation: popUp 0.25s ease-out;
+    z-index: 101;
+}
+
+.rp-mem-data-panel.hidden {
+    display: none;
+}
+
+.rp-mem-data-panel-title {
+    font-size: 0.85em;
+    font-weight: 700;
+    margin-bottom: 10px;
+    opacity: 0.7;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+/* Card grid */
+.rp-mem-card-grid {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+/* --- Entity Card (inside data panel) --- */
+.rp-mem-card {
+    width: 260px;
+    border-radius: 12px;
+    background: var(--SmartThemeBlurTintColor, rgba(30, 30, 45, 0.6));
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.06));
+    cursor: pointer;
+    transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s;
+    overflow: hidden;
+    flex-shrink: 0;
+}
+
+.rp-mem-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    border-color: var(--SmartThemeQuoteColor, rgba(136, 136, 200, 0.3));
+}
+
+.rp-mem-card.tier-pinned {
+    border-left: 3px solid var(--SmartThemeQuoteColor, #f90);
+}
+
+.rp-mem-card.tier-archived {
+    opacity: 0.5;
+}
+
+.rp-mem-card-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 12px 6px;
+}
+
+.rp-mem-card-name {
+    font-weight: 700;
+    font-size: 0.9em;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.rp-mem-card-tier {
+    font-size: 0.65em;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: var(--SmartThemeBlurTintColor, rgba(0,0,0,0.3));
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    flex-shrink: 0;
+}
+
+.rp-mem-card-importance {
+    font-size: 0.7em;
+    opacity: 0.5;
+    flex-shrink: 0;
+}
+
+.rp-mem-card-body {
+    padding: 4px 12px 10px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+
+/* Grid items inside card body */
+.rp-mem-grid-item {
+    background: var(--SmartThemeBlurTintColor, rgba(0,0,0,0.2));
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 0.78em;
+    max-width: 100%;
+    overflow: hidden;
+}
+
+.rp-mem-grid-item-label {
+    font-weight: 700;
+    font-size: 0.75em;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    opacity: 0.6;
+    margin-bottom: 1px;
+}
+
+.rp-mem-grid-item-value {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 220px;
+}
+
+/* Add entity button in data panel */
+.rp-mem-panel-add-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    width: 100%;
+    padding: 8px;
+    margin-top: 10px;
+    border-radius: 8px;
+    border: 1px dashed var(--SmartThemeBorderColor, rgba(255,255,255,0.15));
+    background: transparent;
+    color: var(--SmartThemeBodyColor, #aaa);
+    font-size: 0.8em;
+    cursor: pointer;
+    transition: all 0.2s;
+    opacity: 0.6;
+}
+
+.rp-mem-panel-add-btn:hover {
+    opacity: 1;
+    background: var(--SmartThemeBorderColor, rgba(255,255,255,0.05));
+}
+
+/* --- Edit Overlay (fullscreen modal) --- */
+.rp-mem-edit-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    z-index: 99999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    animation: popUp 0.2s ease-out;
+}
+
+.rp-mem-edit-dialog {
+    width: 90%;
+    max-width: 600px;
+    max-height: 85vh;
+    overflow-y: auto;
+    border-radius: 12px;
+    background: var(--SmartThemeBlurTintColor, rgba(25, 25, 40, 0.95));
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.1));
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+    padding: 24px;
+}
+
+.rp-mem-edit-dialog-title {
+    font-size: 1.1em;
+    font-weight: 700;
+    margin-bottom: 16px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.1));
+}
+
+.rp-mem-edit-dialog-row {
+    margin-bottom: 12px;
+}
+
+.rp-mem-edit-dialog-row label {
+    display: block;
+    font-size: 0.8em;
+    font-weight: 600;
+    opacity: 0.7;
     margin-bottom: 4px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
 }
 
-.rp-mem-panel-content .rp-mem-entity {
-    font-size: 0.82em;
+.rp-mem-edit-dialog-row input,
+.rp-mem-edit-dialog-row textarea,
+.rp-mem-edit-dialog-row select {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.1));
+    border-radius: 8px;
+    background: var(--SmartThemeBlurTintColor, rgba(0,0,0,0.25));
+    color: var(--SmartThemeBodyColor, #eee);
+    font-size: 0.9em;
+    font-family: inherit;
+    box-sizing: border-box;
+    transition: border-color 0.2s;
 }
 
-.rp-mem-panel-content .rp-mem-actions {
-    position: sticky;
-    bottom: 0;
-    background: var(--SmartThemeBlurTintColor, rgba(20,20,20,0.95));
-    margin: 0;
-    padding: 6px 0;
+.rp-mem-edit-dialog-row input:focus,
+.rp-mem-edit-dialog-row textarea:focus,
+.rp-mem-edit-dialog-row select:focus {
+    outline: none;
+    border-color: var(--SmartThemeQuoteColor, rgba(136, 136, 200, 0.5));
+}
+
+.rp-mem-edit-dialog-row textarea {
+    min-height: 60px;
+    resize: vertical;
+}
+
+.rp-mem-edit-dialog-meta {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.rp-mem-edit-dialog-meta > .rp-mem-edit-dialog-row {
+    flex: 1;
+    min-width: 120px;
+}
+
+.rp-mem-edit-dialog-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.1));
+}
+
+.rp-mem-edit-dialog-actions .menu_button {
+    padding: 8px 18px;
+    border-radius: 8px;
+    font-size: 0.85em;
+}
+
+.rp-mem-edit-dialog-actions .rp-mem-dialog-save {
+    color: #6f6;
+}
+
+.rp-mem-edit-dialog-actions .rp-mem-dialog-cancel {
+    color: #f66;
+}
+
+.rp-mem-edit-dialog-actions .rp-mem-dialog-delete {
+    margin-left: auto;
+    color: #f44;
+    opacity: 0.6;
+}
+
+.rp-mem-edit-dialog-actions .rp-mem-dialog-delete:hover {
+    opacity: 1;
+}
+
+/* --- Animation --- */
+@keyframes popUp {
+    from {
+        opacity: 0;
+        transform: translateY(15px) scale(0.98);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+/* --- Scrollbar styling for data panel --- */
+.rp-mem-data-panel::-webkit-scrollbar {
+    width: 5px;
+}
+
+.rp-mem-data-panel::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.rp-mem-data-panel::-webkit-scrollbar-thumb {
+    background: var(--SmartThemeBorderColor, rgba(255,255,255,0.15));
+    border-radius: 3px;
+}
+
+.rp-mem-edit-dialog::-webkit-scrollbar {
+    width: 5px;
+}
+
+.rp-mem-edit-dialog::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.rp-mem-edit-dialog::-webkit-scrollbar-thumb {
+    background: var(--SmartThemeBorderColor, rgba(255,255,255,0.15));
+    border-radius: 3px;
 }
