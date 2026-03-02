@@ -4,10 +4,11 @@ import { generateId } from './Utils.js';
 const CATEGORIES = ['characters', 'locations', 'mainCharacter', 'goals', 'events'];
 
 export class ExtractionPipeline {
-    constructor(apiClient, memoryStore, getSettings) {
+    constructor(apiClient, memoryStore, getSettings, decayEngine = null) {
         this.apiClient = apiClient;
         this.memoryStore = memoryStore;
         this.getSettings = getSettings;
+        this.decayEngine = decayEngine;
     }
 
     /**
@@ -196,15 +197,24 @@ export class ExtractionPipeline {
                 // Update existing entity
                 const conflicts = this._detectConflicts(existing, entity, currentTurn);
                 const mergedFields = this._mergeFields(existing.fields, entity.fields);
+                const newImportance = entity.importance ?? existing.importance;
 
                 this.memoryStore.updateEntity(category, entityId, {
                     fields: mergedFields,
-                    importance: entity.importance ?? existing.importance,
-                    baseScore: entity.importance ?? existing.baseScore,
-                    lastMentionedTurn: currentTurn,
-                    tier: this._assignTier(entity.importance ?? existing.importance),
                     conflicts: [...(existing.conflicts || []), ...conflicts],
                 });
+
+                // Reinforce: reset decay, restore score, promote Tier 3 → 2 if applicable
+                if (this.decayEngine) {
+                    this.decayEngine.reinforce(this.memoryStore, category, entityId, currentTurn, newImportance);
+                } else {
+                    this.memoryStore.updateEntity(category, entityId, {
+                        importance: newImportance,
+                        baseScore: newImportance,
+                        lastMentionedTurn: currentTurn,
+                        tier: this._assignTier(newImportance),
+                    });
+                }
             } else {
                 // New entity
                 const tier = this._assignTier(entity.importance || 5);

@@ -53,15 +53,15 @@ export function createEmptyEntity(category, name, turn = 0) {
                 description: '',
                 personality: '',
                 status: '',
-                relationships: [],
+                relationships: '',
             };
             break;
         case 'locations':
             base.fields = {
                 description: '',
                 atmosphere: '',
-                notableFeatures: [],
-                connections: [],
+                notableFeatures: '',
+                connections: '',
             };
             break;
         case 'mainCharacter':
@@ -70,13 +70,11 @@ export function createEmptyEntity(category, name, turn = 0) {
             base.baseScore = 10;
             base.fields = {
                 description: '',
-                skills: [],
-                inventory: [],
-                status: {
-                    health: '',
-                    conditions: [],
-                    buffs: [],
-                },
+                skills: '',
+                inventory: '',
+                health: '',
+                conditions: '',
+                buffs: '',
             };
             break;
         case 'goals':
@@ -91,7 +89,7 @@ export function createEmptyEntity(category, name, turn = 0) {
             base.fields = {
                 description: '',
                 turn: turn,
-                involvedEntities: [],
+                involvedEntities: '',
                 consequences: '',
                 significance: '',
             };

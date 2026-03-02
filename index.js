@@ -1697,7 +1697,7 @@ jQuery(async function () {
         apiClient = new OpenRouterClient(() => getSettings());
         apiClient.setKeyResolver(resolveApiKey);
         decayEngine = new DecayEngine(() => getSettings());
-        pipeline = new ExtractionPipeline(apiClient, memoryStore, () => getSettings());
+        pipeline = new ExtractionPipeline(apiClient, memoryStore, () => getSettings(), decayEngine);
         embeddingService = new EmbeddingService(apiClient, () => getSettings());
 
         // Sync UI
