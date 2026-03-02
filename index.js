@@ -1437,6 +1437,9 @@ jQuery(async function () {
         // Load initial state
         onChatChanged();
 
+        // Auto-open floating panel
+        openMemoryPanel();
+
         console.log('[RP Memory] Extension loaded successfully');
     } catch (err) {
         console.error('[RP Memory] Failed to initialize:', err);
