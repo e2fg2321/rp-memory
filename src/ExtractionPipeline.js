@@ -177,6 +177,11 @@ export class ExtractionPipeline {
         for (const entity of extractedData.entities) {
             if (!entity.name && !entity.id) continue;
 
+            // Flatten any arrays/objects from LLM output to strings
+            if (entity.fields) {
+                entity.fields = this._flattenFields(entity.fields);
+            }
+
             const entityId = entity.id || generateId(entity.name);
 
             // For mainCharacter, always merge into the single MC entry
@@ -229,11 +234,6 @@ export class ExtractionPipeline {
             const conflicts = this._detectConflicts(existing, entity, currentTurn);
             const mergedFields = this._mergeFields(existing.fields, entity.fields);
 
-            // For MC status, do a deeper merge
-            if (entity.fields?.status && existing.fields?.status) {
-                mergedFields.status = this._mergeFields(existing.fields.status, entity.fields.status);
-            }
-
             this.memoryStore.updateEntity('mainCharacter', existing.id, {
                 name: entity.name || existing.name,
                 fields: mergedFields,
@@ -258,9 +258,44 @@ export class ExtractionPipeline {
     }
 
     /**
+     * Flatten any arrays or objects from LLM output into plain strings.
+     * Ensures all field values are stored as strings (or numbers for 'turn').
+     */
+    _flattenFields(fields) {
+        const flat = {};
+
+        for (const [key, value] of Object.entries(fields)) {
+            if (value === null || value === undefined) continue;
+
+            if (Array.isArray(value)) {
+                // Array of objects (e.g. old-format relationships [{target, nature}])
+                if (value.length > 0 && typeof value[0] === 'object' && value[0] !== null) {
+                    flat[key] = value.map(v => v.target ? `${v.target}: ${v.nature || ''}` : JSON.stringify(v)).join(', ');
+                } else {
+                    flat[key] = value.join(', ');
+                }
+            } else if (typeof value === 'object') {
+                // Nested object (e.g. old-format status {health, conditions, buffs})
+                // Promote children to top-level
+                for (const [subKey, subVal] of Object.entries(value)) {
+                    if (subVal === null || subVal === undefined) continue;
+                    if (Array.isArray(subVal)) {
+                        flat[subKey] = subVal.join(', ');
+                    } else {
+                        flat[subKey] = String(subVal);
+                    }
+                }
+            } else {
+                flat[key] = value;
+            }
+        }
+
+        return flat;
+    }
+
+    /**
      * Merge new fields into existing fields.
      * Only overwrites fields that are present in the new data.
-     * For arrays, replaces entirely (not appends) — the LLM should output the full updated array.
      */
     _mergeFields(existing, updated) {
         if (!updated) return { ...existing };

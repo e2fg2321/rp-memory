@@ -40,9 +40,7 @@ OUTPUT FORMAT:
         "description": "Physical appearance and defining traits (concise)",
         "personality": "Key personality traits observed",
         "status": "Current state: alive/dead/injured/missing + details",
-        "relationships": [
-          {"target": "other-entity-id", "nature": "brief relationship description"}
-        ]
+        "relationships": "string — e.g. 'Kira: romantic tension, Marcus: uneasy alliance'"
       }
     }
   ]
@@ -87,8 +85,8 @@ OUTPUT FORMAT:
       "fields": {
         "description": "What this place looks like, key visual details",
         "atmosphere": "Mood, feeling, sensory details",
-        "notableFeatures": ["feature1", "feature2"],
-        "connections": ["connected-location-id"]
+        "notableFeatures": "string — e.g. 'ancient oak tree, hidden trapdoor, glowing runes'",
+        "connections": "string — e.g. 'leads to the Underground Caverns, adjacent to Market Square'"
       }
     }
   ]
@@ -132,13 +130,11 @@ OUTPUT FORMAT:
       "importance": 10,
       "fields": {
         "description": "Current appearance (only if changed)",
-        "skills": ["skill1", "skill2"],
-        "inventory": ["item1", "item2"],
-        "status": {
-          "health": "current health state",
-          "conditions": ["condition1"],
-          "buffs": ["buff1"]
-        }
+        "skills": "string — e.g. 'swordfighting, basic fire magic'",
+        "inventory": "string — e.g. 'iron sword, 2 healing potions, old map'",
+        "health": "string — e.g. 'lightly wounded, bruised ribs'",
+        "conditions": "string — e.g. 'poisoned (mild), fatigued'",
+        "buffs": "string — e.g. 'enhanced strength (2 turns remaining)'"
       }
     }
   ]
@@ -237,7 +233,7 @@ OUTPUT FORMAT:
       "fields": {
         "description": "What happened in 1-2 sentences",
         "turn": 0,
-        "involvedEntities": ["entity-id-1", "entity-id-2"],
+        "involvedEntities": "string — e.g. 'Kira, Marcus, the Shadow Council'",
         "consequences": "What this event means for the story going forward",
         "significance": "Why this matters narratively"
       }

@@ -150,20 +150,46 @@ export class PromptInjector {
         return estimateTokens(text);
     }
 
+    /**
+     * Backward-compatible string coercion. Handles old data formats
+     * (arrays, objects) and new flat strings uniformly.
+     */
+    _str(value) {
+        if (!value) return '';
+        if (Array.isArray(value)) {
+            if (value.length && typeof value[0] === 'object') {
+                return value.map(v => v.target ? `${v.target}: ${v.nature}` : JSON.stringify(v)).join(', ');
+            }
+            return value.join(', ');
+        }
+        if (typeof value === 'object') {
+            return Object.entries(value)
+                .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
+                .filter(([, v]) => v)
+                .join(', ');
+        }
+        return String(value);
+    }
+
     _formatMainCharacter(mc) {
         const f = mc.fields;
         const lines = [`## Main Character: ${mc.name}`];
 
         if (f.description) lines.push(`Description: ${f.description}`);
 
-        if (f.status) {
-            if (f.status.health) lines.push(`Health: ${f.status.health}`);
-            if (f.status.conditions?.length) lines.push(`Conditions: ${f.status.conditions.join(', ')}`);
-            if (f.status.buffs?.length) lines.push(`Buffs: ${f.status.buffs.join(', ')}`);
-        }
+        // Flat fields (new format)
+        const health = this._str(f.health) || this._str(f.status?.health);
+        const conditions = this._str(f.conditions) || this._str(f.status?.conditions);
+        const buffs = this._str(f.buffs) || this._str(f.status?.buffs);
 
-        if (f.skills?.length) lines.push(`Skills: ${f.skills.join(', ')}`);
-        if (f.inventory?.length) lines.push(`Inventory: ${f.inventory.join(', ')}`);
+        if (health) lines.push(`Health: ${health}`);
+        if (conditions) lines.push(`Conditions: ${conditions}`);
+        if (buffs) lines.push(`Buffs: ${buffs}`);
+
+        const skills = this._str(f.skills);
+        const inventory = this._str(f.inventory);
+        if (skills) lines.push(`Skills: ${skills}`);
+        if (inventory) lines.push(`Inventory: ${inventory}`);
 
         return lines.join('\n');
     }
@@ -176,11 +202,9 @@ export class PromptInjector {
             const tierMarker = c.tier === 1 ? ' [PINNED]' : '';
             lines.push(`- ${c.name}${tierMarker}: ${c.fields.description || 'No description'}`);
             if (c.fields.personality) lines.push(`  Personality: ${c.fields.personality}`);
-            if (c.fields.status) lines.push(`  Status: ${c.fields.status}`);
-            if (c.fields.relationships?.length) {
-                const rels = c.fields.relationships.map(r => `${r.target}: ${r.nature}`).join('; ');
-                lines.push(`  Relationships: ${rels}`);
-            }
+            if (c.fields.status) lines.push(`  Status: ${this._str(c.fields.status)}`);
+            const rels = this._str(c.fields.relationships);
+            if (rels) lines.push(`  Relationships: ${rels}`);
         }
 
         return lines.join('\n');
@@ -194,9 +218,8 @@ export class PromptInjector {
             const tierMarker = loc.tier === 1 ? ' [PINNED]' : '';
             lines.push(`- ${loc.name}${tierMarker}: ${loc.fields.description || 'No description'}`);
             if (loc.fields.atmosphere) lines.push(`  Atmosphere: ${loc.fields.atmosphere}`);
-            if (loc.fields.notableFeatures?.length) {
-                lines.push(`  Features: ${loc.fields.notableFeatures.join(', ')}`);
-            }
+            const features = this._str(loc.fields.notableFeatures);
+            if (features) lines.push(`  Features: ${features}`);
         }
 
         return lines.join('\n');

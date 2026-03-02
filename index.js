@@ -548,33 +548,16 @@ function renderEntityFields(category, fields) {
 
     for (const [key, value] of Object.entries(fields)) {
         if (value === null || value === undefined || value === '') continue;
+        // Skip empty arrays (legacy data)
+        if (Array.isArray(value) && value.length === 0) continue;
+        // Skip empty objects (legacy data)
+        if (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) continue;
 
         const label = key.charAt(0).toUpperCase() + key.slice(1).replace(/([A-Z])/g, ' $1');
+        const displayVal = displayStr(value);
+        if (!displayVal) continue;
 
-        if (Array.isArray(value)) {
-            if (value.length === 0) continue;
-            // Check if it's an array of objects (relationships)
-            if (typeof value[0] === 'object' && value[0] !== null) {
-                const formatted = value.map(v => {
-                    if (v.target && v.nature) return `${v.target}: ${v.nature}`;
-                    return JSON.stringify(v);
-                }).join(', ');
-                lines.push(`<div class="rp-mem-field" data-field="${escapeHtml(key)}" data-type="relationship-array"><span class="rp-mem-field-label">${escapeHtml(label)}:</span> <span class="rp-mem-field-value">${escapeHtml(formatted)}</span></div>`);
-            } else {
-                lines.push(`<div class="rp-mem-field" data-field="${escapeHtml(key)}" data-type="array"><span class="rp-mem-field-label">${escapeHtml(label)}:</span> <span class="rp-mem-field-value">${escapeHtml(value.join(', '))}</span></div>`);
-            }
-        } else if (typeof value === 'object') {
-            // Nested object (e.g., status for mainCharacter)
-            for (const [subKey, subVal] of Object.entries(value)) {
-                if (!subVal || (Array.isArray(subVal) && subVal.length === 0)) continue;
-                const subLabel = subKey.charAt(0).toUpperCase() + subKey.slice(1);
-                const displayVal = Array.isArray(subVal) ? subVal.join(', ') : String(subVal);
-                const subType = Array.isArray(subVal) ? 'array' : 'string';
-                lines.push(`<div class="rp-mem-field" data-field="${escapeHtml(key)}.${escapeHtml(subKey)}" data-type="${subType}"><span class="rp-mem-field-label">${escapeHtml(subLabel)}:</span> <span class="rp-mem-field-value">${escapeHtml(displayVal)}</span></div>`);
-            }
-        } else {
-            lines.push(`<div class="rp-mem-field" data-field="${escapeHtml(key)}" data-type="string"><span class="rp-mem-field-label">${escapeHtml(label)}:</span> <span class="rp-mem-field-value">${escapeHtml(String(value))}</span></div>`);
-        }
+        lines.push(`<div class="rp-mem-field" data-field="${escapeHtml(key)}" data-type="string"><span class="rp-mem-field-label">${escapeHtml(label)}:</span> <span class="rp-mem-field-value">${escapeHtml(displayVal)}</span></div>`);
     }
 
     return lines.join('');
@@ -700,29 +683,29 @@ async function openAddEntityDialog(category) {
 /**
  * Field definitions for inline editing per category.
  * Each entry: { key, label, type, options? }
- * type: 'text' | 'textarea' | 'csv' | 'number' | 'select' | 'relationships' | 'nested'
- * For nested (mainCharacter status), we define sub-fields.
+ * type: 'text' | 'textarea' | 'number' | 'select'
+ * All string fields stored as plain strings — no CSV parsing or dot-notation.
  */
 const FIELD_DEFS = {
     characters: [
         { key: 'description', label: 'Description', type: 'textarea' },
         { key: 'personality', label: 'Personality', type: 'textarea' },
         { key: 'status', label: 'Status', type: 'text' },
-        { key: 'relationships', label: 'Relationships (one per line: target: nature)', type: 'relationships' },
+        { key: 'relationships', label: 'Relationships', type: 'textarea' },
     ],
     locations: [
         { key: 'description', label: 'Description', type: 'textarea' },
         { key: 'atmosphere', label: 'Atmosphere', type: 'text' },
-        { key: 'notableFeatures', label: 'Notable Features (comma-separated)', type: 'csv' },
-        { key: 'connections', label: 'Connections (comma-separated)', type: 'csv' },
+        { key: 'notableFeatures', label: 'Notable Features', type: 'textarea' },
+        { key: 'connections', label: 'Connections', type: 'textarea' },
     ],
     mainCharacter: [
         { key: 'description', label: 'Description', type: 'textarea' },
-        { key: 'skills', label: 'Skills (comma-separated)', type: 'csv' },
-        { key: 'inventory', label: 'Inventory (comma-separated)', type: 'csv' },
-        { key: 'status.health', label: 'Health', type: 'text' },
-        { key: 'status.conditions', label: 'Conditions (comma-separated)', type: 'csv' },
-        { key: 'status.buffs', label: 'Buffs (comma-separated)', type: 'csv' },
+        { key: 'skills', label: 'Skills', type: 'textarea' },
+        { key: 'inventory', label: 'Inventory', type: 'textarea' },
+        { key: 'health', label: 'Health', type: 'text' },
+        { key: 'conditions', label: 'Conditions', type: 'text' },
+        { key: 'buffs', label: 'Buffs', type: 'text' },
     ],
     goals: [
         { key: 'description', label: 'Description', type: 'textarea' },
@@ -738,40 +721,31 @@ const FIELD_DEFS = {
     events: [
         { key: 'description', label: 'Description', type: 'textarea' },
         { key: 'turn', label: 'Turn', type: 'number' },
-        { key: 'involvedEntities', label: 'Involved Entities (comma-separated)', type: 'csv' },
+        { key: 'involvedEntities', label: 'Involved Entities', type: 'textarea' },
         { key: 'consequences', label: 'Consequences', type: 'textarea' },
         { key: 'significance', label: 'Significance', type: 'text' },
     ],
 };
 
 /**
- * Get a nested field value from entity.fields using dot notation.
+ * Backward-compatible string coercion for display.
+ * Handles legacy arrays/objects from old data, returns a plain string.
  */
-function getFieldValue(fields, key) {
-    if (key.includes('.')) {
-        const [parent, child] = key.split('.');
-        const parentObj = fields[parent];
-        if (parentObj && typeof parentObj === 'object' && !Array.isArray(parentObj)) {
-            return parentObj[child];
+function displayStr(value) {
+    if (!value) return '';
+    if (Array.isArray(value)) {
+        if (value.length && typeof value[0] === 'object') {
+            return value.map(v => v.target ? `${v.target}: ${v.nature || ''}` : JSON.stringify(v)).join(', ');
         }
-        return undefined;
+        return value.join(', ');
     }
-    return fields[key];
-}
-
-/**
- * Set a nested field value on entity.fields using dot notation.
- */
-function setFieldValue(fields, key, value) {
-    if (key.includes('.')) {
-        const [parent, child] = key.split('.');
-        if (!fields[parent] || typeof fields[parent] !== 'object' || Array.isArray(fields[parent])) {
-            fields[parent] = {};
-        }
-        fields[parent][child] = value;
-    } else {
-        fields[key] = value;
+    if (typeof value === 'object') {
+        return Object.entries(value)
+            .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
+            .filter(([, v]) => v)
+            .join('; ');
     }
+    return String(value);
 }
 
 let currentEditCard = null; // Track the currently editing card
@@ -828,41 +802,30 @@ function enterEditMode(category, entityId) {
     $fields.empty();
 
     for (const def of defs) {
-        const value = getFieldValue(fields, def.key);
+        const rawValue = fields[def.key];
         let inputHtml = '';
 
         switch (def.type) {
             case 'textarea': {
-                const val = value || '';
+                const val = displayStr(rawValue);
                 inputHtml = `<textarea class="rp-mem-inline-textarea" data-edit-field="${def.key}">${escapeHtml(val)}</textarea>`;
                 break;
             }
             case 'text': {
-                const val = value || '';
-                inputHtml = `<input type="text" class="rp-mem-inline-input" data-edit-field="${def.key}" value="${escapeHtml(val)}" />`;
-                break;
-            }
-            case 'csv': {
-                const val = Array.isArray(value) ? value.join(', ') : (value || '');
+                const val = displayStr(rawValue);
                 inputHtml = `<input type="text" class="rp-mem-inline-input" data-edit-field="${def.key}" value="${escapeHtml(val)}" />`;
                 break;
             }
             case 'number': {
-                const val = value || 0;
+                const val = rawValue || 0;
                 inputHtml = `<input type="number" class="rp-mem-inline-input" data-edit-field="${def.key}" value="${val}" />`;
                 break;
             }
             case 'select': {
                 const opts = (def.options || []).map(o =>
-                    `<option value="${o.value}" ${value === o.value ? 'selected' : ''}>${escapeHtml(o.label)}</option>`,
+                    `<option value="${o.value}" ${rawValue === o.value ? 'selected' : ''}>${escapeHtml(o.label)}</option>`,
                 ).join('');
                 inputHtml = `<select class="rp-mem-inline-select" data-edit-field="${def.key}">${opts}</select>`;
-                break;
-            }
-            case 'relationships': {
-                const rels = Array.isArray(value) ? value : [];
-                const val = rels.map(r => `${r.target}: ${r.nature}`).join('\n');
-                inputHtml = `<textarea class="rp-mem-inline-textarea" data-edit-field="${def.key}">${escapeHtml(val)}</textarea>`;
                 break;
             }
         }
@@ -941,7 +904,6 @@ function exitEditMode(save) {
 }
 
 function readInlineFields($card, category, existingFields) {
-    const parseCSV = (val) => val ? val.split(',').map(s => s.trim()).filter(Boolean) : [];
     const defs = FIELD_DEFS[category] || [];
     // Start from a clone of existing fields to preserve any fields we don't have defs for
     const fields = JSON.parse(JSON.stringify(existingFields || {}));
@@ -952,30 +914,14 @@ function readInlineFields($card, category, existingFields) {
 
         let value;
         switch (def.type) {
-            case 'textarea':
-            case 'text':
-            case 'select':
-                value = $input.val() || '';
-                break;
-            case 'csv':
-                value = parseCSV($input.val());
-                break;
             case 'number':
                 value = parseInt($input.val()) || 0;
                 break;
-            case 'relationships': {
-                const text = $input.val() || '';
-                value = text.split('\n').filter(Boolean).map(line => {
-                    const [target, ...natureParts] = line.split(':');
-                    return { target: target.trim(), nature: natureParts.join(':').trim() };
-                }).filter(r => r.target && r.nature);
-                break;
-            }
             default:
                 value = $input.val() || '';
         }
 
-        setFieldValue(fields, def.key, value);
+        fields[def.key] = value;
     }
 
     return fields;
@@ -1458,30 +1404,11 @@ function buildCardHtml(category, entity) {
     if (entity.fields) {
         for (const [key, value] of Object.entries(entity.fields)) {
             if (value === null || value === undefined || value === '') continue;
+            if (Array.isArray(value) && value.length === 0) continue;
+            if (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) continue;
 
             const label = key.charAt(0).toUpperCase() + key.slice(1).replace(/([A-Z])/g, ' $1');
-            let displayVal = '';
-
-            if (Array.isArray(value)) {
-                if (value.length === 0) continue;
-                if (typeof value[0] === 'object' && value[0] !== null) {
-                    displayVal = value.map(v => v.target ? `${v.target}: ${v.nature || ''}` : JSON.stringify(v)).join(', ');
-                } else {
-                    displayVal = value.join(', ');
-                }
-            } else if (typeof value === 'object') {
-                // Nested object (e.g. status for mainCharacter)
-                const parts = [];
-                for (const [sk, sv] of Object.entries(value)) {
-                    if (!sv || (Array.isArray(sv) && sv.length === 0)) continue;
-                    parts.push(`${sk}: ${Array.isArray(sv) ? sv.join(', ') : sv}`);
-                }
-                if (parts.length === 0) continue;
-                displayVal = parts.join('; ');
-            } else {
-                displayVal = String(value);
-            }
-
+            const displayVal = displayStr(value);
             if (!displayVal) continue;
 
             gridItems += `
@@ -1532,41 +1459,30 @@ function openCardEditOverlay(category, entityId) {
     // Build field inputs
     let fieldInputs = '';
     for (const def of defs) {
-        const value = getFieldValue(fields, def.key);
+        const rawValue = fields[def.key];
         let inputHtml = '';
 
         switch (def.type) {
             case 'textarea': {
-                const val = value || '';
+                const val = displayStr(rawValue);
                 inputHtml = `<textarea data-edit-field="${def.key}">${escapeHtml(val)}</textarea>`;
                 break;
             }
             case 'text': {
-                const val = value || '';
-                inputHtml = `<input type="text" data-edit-field="${def.key}" value="${escapeHtml(val)}" />`;
-                break;
-            }
-            case 'csv': {
-                const val = Array.isArray(value) ? value.join(', ') : (value || '');
+                const val = displayStr(rawValue);
                 inputHtml = `<input type="text" data-edit-field="${def.key}" value="${escapeHtml(val)}" />`;
                 break;
             }
             case 'number': {
-                const val = value || 0;
+                const val = rawValue || 0;
                 inputHtml = `<input type="number" data-edit-field="${def.key}" value="${val}" />`;
                 break;
             }
             case 'select': {
                 const opts = (def.options || []).map(o =>
-                    `<option value="${o.value}" ${value === o.value ? 'selected' : ''}>${escapeHtml(o.label)}</option>`,
+                    `<option value="${o.value}" ${rawValue === o.value ? 'selected' : ''}>${escapeHtml(o.label)}</option>`,
                 ).join('');
                 inputHtml = `<select data-edit-field="${def.key}">${opts}</select>`;
-                break;
-            }
-            case 'relationships': {
-                const rels = Array.isArray(value) ? value : [];
-                const val = rels.map(r => `${r.target}: ${r.nature}`).join('\n');
-                inputHtml = `<textarea data-edit-field="${def.key}">${escapeHtml(val)}</textarea>`;
                 break;
             }
         }
@@ -1721,7 +1637,6 @@ function saveOverlayEdits() {
 }
 
 function readOverlayFields($dialog, category, existingFields) {
-    const parseCSV = (val) => val ? val.split(',').map(s => s.trim()).filter(Boolean) : [];
     const defs = FIELD_DEFS[category] || [];
     const fields = JSON.parse(JSON.stringify(existingFields || {}));
 
@@ -1731,30 +1646,14 @@ function readOverlayFields($dialog, category, existingFields) {
 
         let value;
         switch (def.type) {
-            case 'textarea':
-            case 'text':
-            case 'select':
-                value = $input.val() || '';
-                break;
-            case 'csv':
-                value = parseCSV($input.val());
-                break;
             case 'number':
                 value = parseInt($input.val()) || 0;
                 break;
-            case 'relationships': {
-                const text = $input.val() || '';
-                value = text.split('\n').filter(Boolean).map(line => {
-                    const [target, ...natureParts] = line.split(':');
-                    return { target: target.trim(), nature: natureParts.join(':').trim() };
-                }).filter(r => r.target && r.nature);
-                break;
-            }
             default:
                 value = $input.val() || '';
         }
 
-        setFieldValue(fields, def.key, value);
+        fields[def.key] = value;
     }
 
     return fields;
