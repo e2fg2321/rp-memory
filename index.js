@@ -871,35 +871,43 @@ function debugLog(...args) {
 // ===================== Init =====================
 
 jQuery(async function () {
-    initSettings();
+    try {
+        console.log('[RP Memory] Initializing...');
 
-    const html = await renderExtensionTemplateAsync('third-party/rp-memory', 'settings');
-    $('#extensions_settings2').append(html);
+        initSettings();
 
-    // Construct singletons
-    memoryStore = new MemoryStore();
-    injector = new PromptInjector(() => getSettings());
-    apiClient = new OpenRouterClient(() => getSettings());
-    decayEngine = new DecayEngine(() => getSettings());
-    pipeline = new ExtractionPipeline(apiClient, memoryStore, () => getSettings());
+        console.log('[RP Memory] Loading template...');
+        const html = await renderExtensionTemplateAsync('third-party/rp-memory', 'settings');
+        $('#extensions_settings2').append(html);
+        console.log('[RP Memory] Template loaded');
 
-    // Sync UI
-    syncUIFromSettings();
+        // Construct singletons
+        memoryStore = new MemoryStore();
+        injector = new PromptInjector(() => getSettings());
+        apiClient = new OpenRouterClient(() => getSettings());
+        decayEngine = new DecayEngine(() => getSettings());
+        pipeline = new ExtractionPipeline(apiClient, memoryStore, () => getSettings());
 
-    // Bind all listeners
-    bindSettingsListeners();
-    bindTabListeners();
-    bindCategoryListeners();
-    bindConflictListeners();
+        // Sync UI
+        syncUIFromSettings();
 
-    // Register event listeners
-    eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
-    eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, onNewMessage);
-    eventSource.on(event_types.MESSAGE_DELETED, () => { lastProcessedLength = getContext().chat?.length || 0; });
-    eventSource.on(event_types.MESSAGE_UPDATED, () => { injectMemoryPrompt(); });
+        // Bind all listeners
+        bindSettingsListeners();
+        bindTabListeners();
+        bindCategoryListeners();
+        bindConflictListeners();
 
-    // Load initial state
-    onChatChanged();
+        // Register event listeners
+        eventSource.on(event_types.CHAT_CHANGED, onChatChanged);
+        eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, onNewMessage);
+        eventSource.on(event_types.MESSAGE_DELETED, () => { lastProcessedLength = getContext().chat?.length || 0; });
+        eventSource.on(event_types.MESSAGE_UPDATED, () => { injectMemoryPrompt(); });
 
-    console.log('[RP Memory] Extension loaded');
+        // Load initial state
+        onChatChanged();
+
+        console.log('[RP Memory] Extension loaded successfully');
+    } catch (err) {
+        console.error('[RP Memory] Failed to initialize:', err);
+    }
 });
