@@ -1,0 +1,12 @@
+{
+    "display_name": "RP Memory",
+    "loading_order": 15,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "RPMemory",
+    "version": "0.1.0",
+    "homePage": "https://github.com/rp-memory/rp-memory",
+    "minimum_client_version": "1.12.0"
+}

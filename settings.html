@@ -1,0 +1,201 @@
+<div id="rp_memory_settings">
+    <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <div class="flex-container alignitemscenter margin0">
+                <b>RP Memory</b>
+                <span id="rp_memory_status" class="rp-mem-status-badge" style="display:none;">
+                    <i class="fa-solid fa-spinner fa-spin"></i> Extracting...
+                </span>
+            </div>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        </div>
+        <div class="inline-drawer-content">
+
+            <!-- Enable toggle -->
+            <label class="checkbox_label">
+                <input id="rp_memory_enabled" type="checkbox" />
+                <span>Enable RP Memory</span>
+            </label>
+
+            <!-- Tab navigation -->
+            <div class="rp-mem-tabs">
+                <div class="menu_button rp-mem-tab active" data-tab="memory">
+                    <i class="fa-solid fa-brain"></i> Memory
+                </div>
+                <div class="menu_button rp-mem-tab" data-tab="settings">
+                    <i class="fa-solid fa-gear"></i> Settings
+                </div>
+                <div class="menu_button rp-mem-tab" data-tab="conflicts">
+                    <i class="fa-solid fa-triangle-exclamation"></i> Conflicts
+                    <span id="rp_memory_conflict_count" class="rp-mem-badge" style="display:none;">0</span>
+                </div>
+            </div>
+
+            <!-- ============ TAB: Memory ============ -->
+            <div id="rp_memory_tab_memory" class="rp-mem-tab-content">
+
+                <!-- Main Character -->
+                <div class="rp-mem-category" data-category="mainCharacter">
+                    <div class="rp-mem-category-header" data-category="mainCharacter">
+                        <i class="fa-solid fa-user"></i>
+                        <span>Main Character</span>
+                        <span class="rp-mem-category-count" data-category="mainCharacter">0</span>
+                        <div class="menu_button menu_button_icon rp-mem-add-btn" data-category="mainCharacter" title="Set up main character">
+                            <i class="fa-solid fa-plus"></i>
+                        </div>
+                    </div>
+                    <div class="rp-mem-category-body" id="rp_memory_cat_mainCharacter"></div>
+                </div>
+
+                <!-- Characters -->
+                <div class="rp-mem-category" data-category="characters">
+                    <div class="rp-mem-category-header" data-category="characters">
+                        <i class="fa-solid fa-users"></i>
+                        <span>Characters (NPCs)</span>
+                        <span class="rp-mem-category-count" data-category="characters">0</span>
+                        <div class="menu_button menu_button_icon rp-mem-add-btn" data-category="characters" title="Add character">
+                            <i class="fa-solid fa-plus"></i>
+                        </div>
+                    </div>
+                    <div class="rp-mem-category-body" id="rp_memory_cat_characters"></div>
+                </div>
+
+                <!-- Locations -->
+                <div class="rp-mem-category" data-category="locations">
+                    <div class="rp-mem-category-header" data-category="locations">
+                        <i class="fa-solid fa-map-location-dot"></i>
+                        <span>Locations</span>
+                        <span class="rp-mem-category-count" data-category="locations">0</span>
+                        <div class="menu_button menu_button_icon rp-mem-add-btn" data-category="locations" title="Add location">
+                            <i class="fa-solid fa-plus"></i>
+                        </div>
+                    </div>
+                    <div class="rp-mem-category-body" id="rp_memory_cat_locations"></div>
+                </div>
+
+                <!-- Goals -->
+                <div class="rp-mem-category" data-category="goals">
+                    <div class="rp-mem-category-header" data-category="goals">
+                        <i class="fa-solid fa-bullseye"></i>
+                        <span>Active Goals / Tasks</span>
+                        <span class="rp-mem-category-count" data-category="goals">0</span>
+                        <div class="menu_button menu_button_icon rp-mem-add-btn" data-category="goals" title="Add goal">
+                            <i class="fa-solid fa-plus"></i>
+                        </div>
+                    </div>
+                    <div class="rp-mem-category-body" id="rp_memory_cat_goals"></div>
+                </div>
+
+                <!-- Events -->
+                <div class="rp-mem-category" data-category="events">
+                    <div class="rp-mem-category-header" data-category="events">
+                        <i class="fa-solid fa-timeline"></i>
+                        <span>Major Events</span>
+                        <span class="rp-mem-category-count" data-category="events">0</span>
+                        <div class="menu_button menu_button_icon rp-mem-add-btn" data-category="events" title="Add event">
+                            <i class="fa-solid fa-plus"></i>
+                        </div>
+                    </div>
+                    <div class="rp-mem-category-body" id="rp_memory_cat_events"></div>
+                </div>
+
+                <!-- Actions -->
+                <div class="rp-mem-actions">
+                    <div id="rp_memory_force_extract" class="menu_button menu_button_icon">
+                        <i class="fa-solid fa-wand-magic-sparkles"></i>
+                        <span>Extract Now</span>
+                    </div>
+                    <div id="rp_memory_clear_all" class="menu_button menu_button_icon">
+                        <i class="fa-solid fa-trash"></i>
+                        <span>Clear All</span>
+                    </div>
+                    <span id="rp_memory_token_count" class="rp-mem-token-count"></span>
+                </div>
+            </div>
+
+            <!-- ============ TAB: Settings ============ -->
+            <div id="rp_memory_tab_settings" class="rp-mem-tab-content" style="display:none;">
+
+                <label>OpenRouter API Key</label>
+                <input id="rp_memory_api_key" type="password" class="text_pole" placeholder="sk-or-..." />
+
+                <label>Extraction Model</label>
+                <select id="rp_memory_model" class="text_pole">
+                    <option value="google/gemini-2.0-flash-001">Gemini 2.0 Flash</option>
+                    <option value="google/gemini-2.5-flash-preview">Gemini 2.5 Flash Preview</option>
+                    <option value="deepseek/deepseek-chat-v3-0324">DeepSeek V3</option>
+                    <option value="qwen/qwen-2.5-72b-instruct">Qwen 2.5 72B</option>
+                </select>
+
+                <div id="rp_memory_test_connection" class="menu_button menu_button_icon">
+                    <i class="fa-solid fa-plug"></i>
+                    <span>Test Connection</span>
+                </div>
+
+                <hr />
+
+                <div class="flex-container justifyspacebetween alignitemscenter">
+                    <label>Extract every <b><span id="rp_memory_interval_val">2</span></b> exchanges</label>
+                </div>
+                <input id="rp_memory_interval" type="range" min="1" max="10" step="1" value="2" />
+
+                <div class="flex-container justifyspacebetween alignitemscenter">
+                    <label>Messages per extraction: <b><span id="rp_memory_msg_count_val">10</span></b></label>
+                </div>
+                <input id="rp_memory_msg_count" type="range" min="4" max="30" step="2" value="10" />
+
+                <div class="flex-container justifyspacebetween alignitemscenter">
+                    <label>Decay factor: <b><span id="rp_memory_decay_val">0.95</span></b></label>
+                </div>
+                <input id="rp_memory_decay" type="range" min="0.80" max="0.99" step="0.01" value="0.95" />
+
+                <div class="flex-container justifyspacebetween alignitemscenter">
+                    <label>Demotion threshold: <b><span id="rp_memory_demote_val">5.0</span></b></label>
+                </div>
+                <input id="rp_memory_demote" type="range" min="1" max="8" step="0.5" value="5.0" />
+
+                <div class="flex-container justifyspacebetween alignitemscenter">
+                    <label>Token budget (0 = uncapped): <b><span id="rp_memory_budget_val">0</span></b></label>
+                </div>
+                <input id="rp_memory_budget" type="range" min="0" max="8000" step="100" value="0" />
+
+                <hr />
+
+                <label>Injection Position</label>
+                <div class="rp-mem-radio-group">
+                    <label class="checkbox_label">
+                        <input type="radio" name="rp_memory_position" value="2" />
+                        <span>Before Main Prompt</span>
+                    </label>
+                    <label class="checkbox_label">
+                        <input type="radio" name="rp_memory_position" value="0" checked />
+                        <span>After Main Prompt</span>
+                    </label>
+                    <label class="checkbox_label">
+                        <input type="radio" name="rp_memory_position" value="1" />
+                        <span>In-chat @ Depth</span>
+                    </label>
+                </div>
+                <div class="flex-container alignitemscenter" id="rp_memory_depth_container" style="display:none;">
+                    <label>Depth:</label>
+                    <input id="rp_memory_depth" class="text_pole" type="number" min="0" max="9999" value="2" style="width:80px;" />
+                </div>
+
+                <hr />
+
+                <label class="checkbox_label">
+                    <input id="rp_memory_debug" type="checkbox" />
+                    <span>Debug mode (console logging)</span>
+                </label>
+            </div>
+
+            <!-- ============ TAB: Conflicts ============ -->
+            <div id="rp_memory_tab_conflicts" class="rp-mem-tab-content" style="display:none;">
+                <div id="rp_memory_conflict_list">
+                    <div class="rp-mem-empty-state">No conflicts detected</div>
+                </div>
+            </div>
+
+        </div>
+    </div>
+</div>

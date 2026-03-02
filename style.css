@@ -1,0 +1,300 @@
+/* ============ Tabs ============ */
+.rp-mem-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+}
+
+.rp-mem-tab {
+    flex: 1;
+    text-align: center;
+    font-size: 0.85em;
+    padding: 4px 8px;
+    opacity: 0.6;
+    transition: opacity 0.2s;
+}
+
+.rp-mem-tab.active {
+    opacity: 1;
+    border-bottom: 2px solid var(--SmartThemeQuoteColor, #888);
+}
+
+.rp-mem-tab-content {
+    min-height: 100px;
+}
+
+/* ============ Status / Badges ============ */
+.rp-mem-status-badge {
+    font-size: 0.75em;
+    margin-left: 8px;
+    color: var(--SmartThemeQuoteColor, #888);
+}
+
+.rp-mem-badge {
+    background: var(--SmartThemeQuoteColor, #c33);
+    color: var(--SmartThemeBodyColor, #fff);
+    border-radius: 50%;
+    font-size: 0.7em;
+    padding: 1px 5px;
+    margin-left: 4px;
+}
+
+/* ============ Categories ============ */
+.rp-mem-category {
+    margin-bottom: 4px;
+    border: 1px solid var(--SmartThemeBorderColor, #333);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.rp-mem-category-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    cursor: pointer;
+    font-size: 0.9em;
+    font-weight: bold;
+    background: var(--SmartThemeBlurTintColor, rgba(0,0,0,0.1));
+    user-select: none;
+}
+
+.rp-mem-category-header:hover {
+    background: var(--SmartThemeBorderColor, rgba(0,0,0,0.2));
+}
+
+.rp-mem-category-count {
+    font-size: 0.75em;
+    opacity: 0.6;
+    margin-left: auto;
+}
+
+.rp-mem-add-btn {
+    margin: 0 !important;
+    padding: 2px 6px !important;
+    font-size: 0.8em;
+}
+
+.rp-mem-category-body {
+    display: none;
+    padding: 4px 8px 8px;
+}
+
+.rp-mem-category-body.open {
+    display: block;
+}
+
+/* ============ Entity Cards ============ */
+.rp-mem-entity {
+    border: 1px solid var(--SmartThemeBorderColor, #444);
+    border-radius: 4px;
+    margin-bottom: 4px;
+    padding: 6px 8px;
+    font-size: 0.85em;
+    position: relative;
+}
+
+.rp-mem-entity.tier-pinned {
+    border-left: 3px solid var(--SmartThemeQuoteColor, #f90);
+}
+
+.rp-mem-entity.tier-active {
+    border-left: 3px solid var(--SmartThemeBorderColor, #888);
+}
+
+.rp-mem-entity.tier-archived {
+    border-left: 3px solid transparent;
+    opacity: 0.5;
+}
+
+.rp-mem-entity-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+}
+
+.rp-mem-entity-name {
+    font-weight: bold;
+    flex: 1;
+}
+
+.rp-mem-tier-badge {
+    font-size: 0.7em;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: var(--SmartThemeBlurTintColor, rgba(0,0,0,0.2));
+    text-transform: uppercase;
+}
+
+.rp-mem-importance {
+    font-size: 0.7em;
+    opacity: 0.6;
+}
+
+.rp-mem-conflict-icon {
+    color: #f90;
+    font-size: 0.85em;
+}
+
+.rp-mem-entity-actions {
+    display: flex;
+    gap: 4px;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+
+.rp-mem-entity:hover .rp-mem-entity-actions {
+    opacity: 1;
+}
+
+.rp-mem-entity-actions i {
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 3px;
+    font-size: 0.85em;
+}
+
+.rp-mem-entity-actions i:hover {
+    background: var(--SmartThemeBorderColor, rgba(0,0,0,0.3));
+}
+
+/* Entity expanded fields */
+.rp-mem-entity-fields {
+    margin-top: 6px;
+    padding-top: 6px;
+    border-top: 1px solid var(--SmartThemeBorderColor, #333);
+    font-size: 0.9em;
+}
+
+.rp-mem-field {
+    margin-bottom: 3px;
+}
+
+.rp-mem-field-label {
+    font-weight: bold;
+    opacity: 0.7;
+    font-size: 0.85em;
+}
+
+.rp-mem-field-value {
+    margin-left: 4px;
+}
+
+/* ============ Actions Bar ============ */
+.rp-mem-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--SmartThemeBorderColor, #333);
+}
+
+.rp-mem-token-count {
+    font-size: 0.75em;
+    opacity: 0.6;
+    margin-left: auto;
+}
+
+/* ============ Empty State ============ */
+.rp-mem-empty-state {
+    text-align: center;
+    padding: 16px;
+    opacity: 0.5;
+    font-size: 0.85em;
+}
+
+/* ============ Conflict Cards ============ */
+.rp-mem-conflict-card {
+    border: 1px solid #f90;
+    border-radius: 4px;
+    margin-bottom: 6px;
+    padding: 8px;
+    font-size: 0.85em;
+}
+
+.rp-mem-conflict-header {
+    font-weight: bold;
+    margin-bottom: 6px;
+}
+
+.rp-mem-conflict-diff {
+    margin-bottom: 6px;
+}
+
+.rp-mem-conflict-old {
+    color: #f66;
+    text-decoration: line-through;
+    margin-bottom: 2px;
+}
+
+.rp-mem-conflict-new {
+    color: #6f6;
+}
+
+.rp-mem-conflict-actions {
+    display: flex;
+    gap: 6px;
+}
+
+.rp-mem-conflict-actions .menu_button {
+    font-size: 0.8em;
+    padding: 2px 8px;
+}
+
+/* ============ Settings Tab ============ */
+.rp-mem-radio-group {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 8px;
+}
+
+#rp_memory_tab_settings label {
+    font-size: 0.85em;
+    margin-top: 6px;
+}
+
+#rp_memory_tab_settings input[type="range"] {
+    width: 100%;
+}
+
+#rp_memory_tab_settings hr {
+    margin: 10px 0;
+    border-color: var(--SmartThemeBorderColor, #333);
+}
+
+/* ============ Editor Popup ============ */
+.rp-mem-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.rp-mem-editor label {
+    font-weight: bold;
+    font-size: 0.85em;
+    margin-top: 4px;
+}
+
+.rp-mem-editor input,
+.rp-mem-editor textarea,
+.rp-mem-editor select {
+    width: 100%;
+}
+
+.rp-mem-editor textarea {
+    min-height: 60px;
+    resize: vertical;
+}
+
+.rp-mem-editor-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.rp-mem-editor-row label {
+    min-width: 80px;
+}
