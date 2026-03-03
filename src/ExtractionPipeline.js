@@ -45,11 +45,14 @@ export class ExtractionPipeline {
         // Step 3: Build trimmed memory state for diff-mode prompts (budget-aware)
         const currentState = this._buildExtractionState();
 
-        // Step 4: Single unified extraction call (with abort support)
+        // Step 4: Build scenario context (character card, world info, system prompt)
+        const scenarioContext = await this._buildScenarioContext(context);
+
+        // Step 5: Single unified extraction call (with abort support)
         this._abortController = new AbortController();
         let result;
         try {
-            result = await this._extractAll(formattedMessages, currentState, context);
+            result = await this._extractAll(formattedMessages, currentState, context, scenarioContext);
         } finally {
             this._abortController = null;
         }
@@ -102,11 +105,12 @@ export class ExtractionPipeline {
 
         const formattedMessages = this._formatMessages(recentMessages, context.name1, context.name2, settings);
         const currentState = this._buildExtractionState();
+        const scenarioContext = await this._buildScenarioContext(context);
 
         this._abortController = new AbortController();
         let result;
         try {
-            result = await this._extractAll(formattedMessages, currentState, context);
+            result = await this._extractAll(formattedMessages, currentState, context, scenarioContext);
         } finally {
             this._abortController = null;
         }
@@ -157,6 +161,9 @@ export class ExtractionPipeline {
             console.debug(`[RP Memory] Full history: ${allMessages.length} messages in ${chunks.length} chunks`);
         }
 
+        // Build scenario context once — same character/world for all chunks
+        const scenarioContext = await this._buildScenarioContext(context);
+
         this._abortController = new AbortController();
 
         try {
@@ -168,7 +175,7 @@ export class ExtractionPipeline {
                 const currentState = this._buildExtractionState();
 
                 // _extractAll throws AbortError if aborted — breaks the loop naturally
-                const result = await this._extractAll(formattedMessages, currentState, context);
+                const result = await this._extractAll(formattedMessages, currentState, context, scenarioContext);
 
                 if (result) {
                     for (const category of CATEGORIES) {
@@ -189,6 +196,45 @@ export class ExtractionPipeline {
         } finally {
             this._abortController = null;
         }
+    }
+
+    /**
+     * Build scenario context from SillyTavern's character card, system prompt, and world info.
+     * This gives the extraction LLM knowledge of the RP setting for better entity extraction
+     * and importance scoring.
+     */
+    async _buildScenarioContext(context) {
+        const parts = [];
+
+        // Character card fields
+        if (context.getCharacterCardFields) {
+            try {
+                const fields = context.getCharacterCardFields();
+                if (fields.description) parts.push(`Character Description: ${fields.description}`);
+                if (fields.personality) parts.push(`Personality: ${fields.personality}`);
+                if (fields.scenario) parts.push(`Scenario: ${fields.scenario}`);
+                if (fields.system) parts.push(`System Prompt: ${fields.system}`);
+            } catch (e) {
+                console.debug('[RP Memory] Could not read character card fields:', e.message);
+            }
+        }
+
+        // World Info / Lorebook — dry run to get activated entries without side effects
+        if (context.getWorldInfoPrompt && context.chat) {
+            try {
+                const chatStrings = context.chat
+                    .filter(m => !m.is_system && m.mes)
+                    .slice(-20)
+                    .map(m => m.mes)
+                    .reverse();
+                const wi = await context.getWorldInfoPrompt(chatStrings, context.maxContext || 8192, true);
+                if (wi?.worldInfoString) parts.push(`World Lore:\n${wi.worldInfoString}`);
+            } catch (e) {
+                console.debug('[RP Memory] Could not read world info:', e.message);
+            }
+        }
+
+        return parts.length > 0 ? parts.join('\n\n') : '';
     }
 
     /**
@@ -286,7 +332,7 @@ export class ExtractionPipeline {
     /**
      * Run unified extraction for all categories in a single API call.
      */
-    async _extractAll(formattedMessages, currentState, context) {
+    async _extractAll(formattedMessages, currentState, context, scenarioContext = '') {
         const lang = this.getLang();
         const systemPrompt = lang === 'zh' ? ExtractionPrompts.UNIFIED_SYSTEM_ZH : ExtractionPrompts.UNIFIED_SYSTEM;
         const userPrompt = ExtractionPrompts.getUnifiedUserPrompt(
@@ -295,6 +341,7 @@ export class ExtractionPipeline {
             context.name1,
             context.name2,
             lang,
+            scenarioContext,
         );
 
         try {

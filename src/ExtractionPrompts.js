@@ -415,7 +415,7 @@ ${COMMON_RULES_ZH}
 
 操作：仅插入 — 事件是历史记录。永远不要更新或删除过去的事件。`;
 
-    static getUnifiedUserPrompt(messages, currentState, userName, charName, lang = 'en') {
+    static getUnifiedUserPrompt(messages, currentState, userName, charName, lang = 'en', scenarioContext = '') {
         const sections = [];
 
         // Characters
@@ -448,8 +448,14 @@ ${COMMON_RULES_ZH}
             Object.keys(events).length > 0 ? JSON.stringify(events) : '(none)'
         }`);
 
+        const scenarioBlock = scenarioContext
+            ? (lang === 'zh'
+                ? `=== 场景背景（参考信息 — 用于理解上下文和重要度评估）===\n${scenarioContext}`
+                : `=== SCENARIO CONTEXT (reference — use for understanding context and importance scoring) ===\n${scenarioContext}`)
+            : '';
+
         if (lang === 'zh') {
-            return `当前记忆状态：
+            return `${scenarioBlock ? scenarioBlock + '\n\n' : ''}当前记忆状态：
 ${sections.join('\n\n')}
 
 最近的消息：
@@ -461,7 +467,7 @@ ${messages}
 提取所有5个类别中的变更。仅输出差异 — 新增或变更的实体。没有变更的类别使用空数组 []。`;
         }
 
-        return `CURRENT MEMORY STATE:
+        return `${scenarioBlock ? scenarioBlock + '\n\n' : ''}CURRENT MEMORY STATE:
 ${sections.join('\n\n')}
 
 RECENT MESSAGES:
