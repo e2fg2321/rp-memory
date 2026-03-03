@@ -12,7 +12,7 @@ export class ExtractionPipeline {
     }
 
     /**
-     * Run extraction on recent messages. Calls all 5 categories in parallel.
+     * Run extraction on recent messages. Single unified API call for all 5 categories.
      * Merges results into memoryStore.
      */
     async extract(context) {
@@ -33,40 +33,27 @@ export class ExtractionPipeline {
         // Step 3: Snapshot current memory state for diff-mode prompts
         const currentState = this.memoryStore.serialize();
 
-        // Step 4: Run all 5 category extractions in parallel
-        const results = await Promise.allSettled(
-            CATEGORIES.map(category =>
-                this._extractCategory(category, formattedMessages, currentState, context),
-            ),
-        );
+        // Step 4: Single unified extraction call
+        const result = await this._extractAll(formattedMessages, currentState, context);
 
-        // Step 5: Process results, merge into memory store
-        let successCount = 0;
-        let failCount = 0;
-
-        for (let i = 0; i < CATEGORIES.length; i++) {
-            const category = CATEGORIES[i];
-            const result = results[i];
-
-            if (result.status === 'fulfilled' && result.value) {
-                try {
-                    this._mergeResult(category, result.value);
-                    successCount++;
-                } catch (mergeError) {
-                    console.warn(`[RP Memory] Merge failed for ${category}:`, mergeError);
-                    failCount++;
+        if (result) {
+            let mergeCount = 0;
+            for (const category of CATEGORIES) {
+                const entities = result[category];
+                if (entities?.length) {
+                    try {
+                        this._mergeResult(category, { entities });
+                        mergeCount++;
+                    } catch (mergeError) {
+                        console.warn(`[RP Memory] Merge failed for ${category}:`, mergeError);
+                    }
                 }
-            } else if (result.status === 'rejected') {
-                console.warn(`[RP Memory] Extraction failed for ${category}:`, result.reason);
-                failCount++;
-            } else {
-                // fulfilled but null (empty response or parse failure)
-                successCount++;
             }
-        }
-
-        if (settings.debugMode) {
-            console.debug(`[RP Memory] Extraction complete: ${successCount} succeeded, ${failCount} failed`);
+            if (settings.debugMode) {
+                console.debug(`[RP Memory] Extraction complete: ${mergeCount} categories had updates`);
+            }
+        } else if (settings.debugMode) {
+            console.debug('[RP Memory] Extraction returned no results');
         }
     }
 
@@ -102,28 +89,79 @@ export class ExtractionPipeline {
     }
 
     /**
-     * Run extraction for a single category via OpenRouter.
+     * Run unified extraction for all categories in a single API call.
      */
-    async _extractCategory(category, formattedMessages, currentState, context) {
-        const categoryState = category === 'mainCharacter'
-            ? (currentState.mainCharacter ? { main_character: currentState.mainCharacter } : {})
-            : (currentState[category] || {});
-
-        const systemPrompt = ExtractionPrompts.getSystemPrompt(category);
-        const userPrompt = ExtractionPrompts.getUserPrompt(
-            category,
+    async _extractAll(formattedMessages, currentState, context) {
+        const systemPrompt = ExtractionPrompts.UNIFIED_SYSTEM;
+        const userPrompt = ExtractionPrompts.getUnifiedUserPrompt(
             formattedMessages,
-            categoryState,
+            currentState,
             context.name1,
             context.name2,
         );
 
-        const response = await this.apiClient.chatCompletion([
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt },
-        ]);
+        try {
+            const response = await this.apiClient.chatCompletion([
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt },
+            ]);
 
-        return this._parseResponse(response);
+            return this._parseUnifiedResponse(response);
+        } catch (error) {
+            console.warn('[RP Memory] Unified extraction call failed:', error);
+            return null;
+        }
+    }
+
+    /**
+     * Parse unified JSON response containing all 5 category arrays.
+     */
+    _parseUnifiedResponse(responseText) {
+        let cleaned = responseText.trim();
+
+        // Strip markdown code fences
+        if (cleaned.startsWith('```json')) {
+            cleaned = cleaned.slice(7);
+        } else if (cleaned.startsWith('```')) {
+            cleaned = cleaned.slice(3);
+        }
+        if (cleaned.endsWith('```')) {
+            cleaned = cleaned.slice(0, -3);
+        }
+        cleaned = cleaned.trim();
+
+        try {
+            const parsed = JSON.parse(cleaned);
+
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                console.warn('[RP Memory] Unified response is not an object');
+                return null;
+            }
+
+            // Validate: at least one known category key with an array value
+            const hasValidCategory = CATEGORIES.some(
+                cat => Array.isArray(parsed[cat]),
+            );
+            if (!hasValidCategory) {
+                console.warn('[RP Memory] Unified response has no valid category arrays');
+                return null;
+            }
+
+            // Ensure all category values are arrays (default to empty)
+            for (const cat of CATEGORIES) {
+                if (!Array.isArray(parsed[cat])) {
+                    parsed[cat] = [];
+                }
+            }
+
+            return parsed;
+        } catch (e) {
+            console.warn('[RP Memory] Failed to parse unified response:', e.message);
+            if (this.getSettings().debugMode) {
+                console.debug('[RP Memory] Raw response:', responseText);
+            }
+            return null;
+        }
     }
 
     /**

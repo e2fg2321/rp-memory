@@ -392,17 +392,69 @@
 .rp-mem-model-row {
     display: flex;
     gap: 4px;
-    align-items: center;
+    align-items: flex-start;
 }
 
-.rp-mem-model-row select {
+.rp-mem-model-search-wrapper {
     flex: 1;
+    position: relative;
+}
+
+.rp-mem-model-search-wrapper input[type="text"] {
+    width: 100%;
+}
+
+.rp-mem-model-list {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    max-height: 250px;
+    overflow-y: auto;
+    background: var(--SmartThemeBlurTintColor, #1a1a2e);
+    border: 1px solid var(--SmartThemeBorderColor, #333);
+    border-top: none;
+    border-radius: 0 0 5px 5px;
+    z-index: 1000;
+}
+
+.rp-mem-model-list.open {
+    display: block;
+}
+
+.rp-mem-model-item {
+    padding: 6px 10px;
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--SmartThemeBodyColor, #ccc);
+    border-bottom: 1px solid var(--SmartThemeBorderColor, #222);
+}
+
+.rp-mem-model-item:last-child {
+    border-bottom: none;
+}
+
+.rp-mem-model-item:hover,
+.rp-mem-model-item.selected {
+    background: var(--SmartThemeQuoteColor, #2a2a4a);
+}
+
+.rp-mem-model-item .model-name {
+    display: block;
+}
+
+.rp-mem-model-item .model-price {
+    display: block;
+    font-size: 11px;
+    opacity: 0.6;
 }
 
 .rp-mem-model-row .menu_button {
     padding: 4px 8px;
     margin: 0;
     flex-shrink: 0;
+    margin-top: 2px;
 }
 
 /* ============ Floating Nav + Data Panel ============ */

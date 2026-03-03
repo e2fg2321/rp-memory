@@ -130,6 +130,7 @@ function syncUIFromSettings() {
     $('#rp_memory_api_key_container').toggle(!s.useSTKey);
     updateSTKeyStatus();
     $('#rp_memory_model').val(s.model);
+    $('#rp_memory_model_search').val(s.model);
     $('#rp_memory_interval').val(s.extractionInterval);
     $('#rp_memory_interval_val').text(s.extractionInterval);
     $('#rp_memory_msg_count').val(s.messagesPerExtraction);
@@ -170,10 +171,7 @@ function bindSettingsListeners() {
         saveSettingsDebounced();
     });
 
-    $('#rp_memory_model').on('change', function () {
-        getSettings().model = $(this).val();
-        saveSettingsDebounced();
-    });
+    // Model selection is handled by the searchable model picker (see bindModelPicker)
 
     // Range sliders
     const rangeMap = {
@@ -1100,49 +1098,130 @@ function showExtractionIndicator(visible) {
 
 async function loadModelList(forceRefresh = false) {
     if (cachedModelList && !forceRefresh) {
-        populateModelDropdown(cachedModelList);
+        renderModelList(cachedModelList);
         return;
     }
 
-    const $select = $('#rp_memory_model');
-    const currentVal = $select.val() || getSettings().model;
-    $select.html('<option value="">-- Loading models... --</option>');
+    const $search = $('#rp_memory_model_search');
+    $search.attr('placeholder', 'Loading models...');
 
     try {
         const models = await apiClient.fetchModels();
+        // Sort alphabetically by name
+        models.sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id));
         cachedModelList = models;
-        populateModelDropdown(models, currentVal);
+        renderModelList(models);
+        $search.attr('placeholder', 'Search models...');
+        // Show friendly name for current selection
+        const currentVal = $('#rp_memory_model').val() || getSettings().model;
+        if (currentVal) {
+            const match = models.find(m => m.id === currentVal);
+            $search.val(match ? match.name : currentVal);
+        }
         debugLog(`Loaded ${models.length} models from OpenRouter`);
     } catch (err) {
         console.error('[RP Memory] Failed to fetch models:', err);
-        // Fall back: keep whatever is currently selected
-        $select.html(`<option value="${escapeHtml(currentVal)}">${escapeHtml(currentVal)}</option>`);
+        $search.attr('placeholder', 'Failed to load models');
         toastr.warning('Could not load model list from OpenRouter');
     }
 }
 
-function populateModelDropdown(models, preserveValue) {
-    const $select = $('#rp_memory_model');
-    const currentVal = preserveValue || $select.val() || getSettings().model;
-    $select.empty();
+function renderModelList(models, filter = '') {
+    const $list = $('#rp_memory_model_list');
+    const currentVal = $('#rp_memory_model').val() || getSettings().model;
+    const query = filter.toLowerCase().trim();
 
-    for (const model of models) {
+    const filtered = query
+        ? models.filter(m => (m.name || '').toLowerCase().includes(query) || (m.id || '').toLowerCase().includes(query))
+        : models;
+
+    $list.empty();
+
+    if (filtered.length === 0) {
+        $list.append('<div class="rp-mem-model-item" style="opacity:0.5;cursor:default;">No models found</div>');
+        return;
+    }
+
+    for (const model of filtered) {
         const pricePerMillion = parseFloat(model.promptPrice || 0) * 1_000_000;
         const priceStr = pricePerMillion < 0.01 ? 'free' : `$${pricePerMillion.toFixed(2)}/1M`;
-        const label = `${model.name} (${priceStr})`;
-        $select.append(`<option value="${escapeHtml(model.id)}">${escapeHtml(label)}</option>`);
+        const isSelected = model.id === currentVal ? ' selected' : '';
+        $list.append(
+            `<div class="rp-mem-model-item${isSelected}" data-model-id="${escapeHtml(model.id)}">` +
+            `<span class="model-name">${escapeHtml(model.name || model.id)}</span>` +
+            `<span class="model-price">${escapeHtml(model.id)} &mdash; ${priceStr}</span>` +
+            `</div>`,
+        );
     }
+}
 
-    // Restore previous selection if it exists in the list
-    if (currentVal && $select.find(`option[value="${CSS.escape(currentVal)}"]`).length) {
-        $select.val(currentVal);
-    } else if (models.length > 0) {
-        // If the saved model isn't in the list, add it at top so we don't lose the setting
-        if (currentVal) {
-            $select.prepend(`<option value="${escapeHtml(currentVal)}">${escapeHtml(currentVal)} (saved)</option>`);
-            $select.val(currentVal);
+function selectModel(modelId, modelName) {
+    $('#rp_memory_model').val(modelId);
+    $('#rp_memory_model_search').val(modelName || modelId);
+    $('#rp_memory_model_list').removeClass('open');
+    getSettings().model = modelId;
+    saveSettingsDebounced();
+}
+
+function bindModelPicker() {
+    const $search = $('#rp_memory_model_search');
+    const $list = $('#rp_memory_model_list');
+
+    // Open on focus — show full list if displaying current selection, otherwise filter
+    $search.on('focus', function () {
+        if (cachedModelList) {
+            const currentId = $('#rp_memory_model').val();
+            const currentModel = cachedModelList.find(m => m.id === currentId);
+            const searchVal = $search.val();
+            const isShowingSelection = searchVal === currentId || (currentModel && searchVal === currentModel.name);
+            renderModelList(cachedModelList, isShowingSelection ? '' : searchVal);
         }
-    }
+        $list.addClass('open');
+    });
+
+    // Filter as user types
+    $search.on('input', function () {
+        if (cachedModelList) {
+            renderModelList(cachedModelList, $(this).val());
+        }
+        $list.addClass('open');
+    });
+
+    // Select on click
+    $list.on('click', '.rp-mem-model-item[data-model-id]', function () {
+        const id = $(this).data('model-id');
+        const name = $(this).find('.model-name').text();
+        selectModel(id, name);
+    });
+
+    // Close on click outside
+    $(document).on('mousedown', function (e) {
+        if (!$(e.target).closest('.rp-mem-model-search-wrapper').length) {
+            $list.removeClass('open');
+            // Restore display to current selection if user didn't pick
+            const currentVal = $('#rp_memory_model').val();
+            if (currentVal && $search.val() !== currentVal) {
+                const model = cachedModelList?.find(m => m.id === currentVal);
+                $search.val(model ? model.name : currentVal);
+            }
+        }
+    });
+
+    // Allow typing a model ID directly and pressing Enter
+    $search.on('keydown', function (e) {
+        if (e.key === 'Enter') {
+            e.preventDefault();
+            const $first = $list.find('.rp-mem-model-item[data-model-id]').first();
+            if ($first.length) {
+                const id = $first.data('model-id');
+                const name = $first.find('.model-name').text();
+                selectModel(id, name);
+            }
+        } else if (e.key === 'Escape') {
+            $list.removeClass('open');
+            $search.blur();
+        }
+    });
 }
 
 // ===================== Embedding Model List =====================
@@ -1715,7 +1794,8 @@ jQuery(async function () {
         eventSource.on(event_types.MESSAGE_DELETED, () => { lastProcessedLength = getContext().chat?.length || 0; });
         eventSource.on(event_types.MESSAGE_UPDATED, () => { injectMemoryPrompt(); });
 
-        // Load model lists (non-blocking)
+        // Init searchable model picker + load model lists (non-blocking)
+        bindModelPicker();
         loadModelList().catch(err => console.warn('[RP Memory] Initial model load failed:', err));
         if (getSettings().embeddingsEnabled) {
             loadEmbeddingModelList().catch(err => console.warn('[RP Memory] Initial embedding model load failed:', err));

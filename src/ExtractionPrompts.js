@@ -40,11 +40,14 @@ OUTPUT FORMAT:
         "description": "Physical appearance and defining traits (concise)",
         "personality": "Key personality traits observed",
         "status": "Current state: alive/dead/injured/missing + details",
-        "relationships": "string — e.g. 'Kira: romantic tension, Marcus: uneasy alliance'"
+        "relationships": "string — e.g. 'Kira: romantic tension, Marcus: uneasy alliance'",
+        "present": "yes or no — can this character directly interact with the MC right now?"
       }
     }
   ]
-}`;
+}
+
+OPERATIONS: Add new characters on first appearance. Update when state changes. Never delete — mark status as "dead"/"missing" instead.`;
 
     static getCharactersUserPrompt(messages, currentState, userName, charName) {
         const stateJson = Object.keys(currentState).length > 0
@@ -90,7 +93,9 @@ OUTPUT FORMAT:
       }
     }
   ]
-}`;
+}
+
+OPERATIONS: Add new locations when first described. Update when new details are revealed. Never delete.`;
 
     static getLocationsUserPrompt(messages, currentState, userName, charName) {
         const stateJson = Object.keys(currentState).length > 0
@@ -134,13 +139,17 @@ OUTPUT FORMAT:
         "inventory": "string — e.g. 'iron sword, 2 healing potions, old map'",
         "health": "string — e.g. 'lightly wounded, bruised ribs'",
         "conditions": "string — e.g. 'poisoned (mild), fatigued'",
-        "buffs": "string — e.g. 'enhanced strength (2 turns remaining)'"
+        "buffs": "string — e.g. 'enhanced strength (2 turns remaining)'",
+        "currentLocation": "where the MC is right now",
+        "currentTime": "in-world time if known, e.g. 'early morning', 'Day 3, afternoon'"
       }
     }
   ]
 }
 
-IMPORTANT: Only include fields that CHANGED. If skills didn't change, omit the "skills" field entirely. If only inventory changed, only include "inventory".`;
+IMPORTANT: Only include fields that CHANGED. If skills didn't change, omit the "skills" field entirely. If only inventory changed, only include "inventory". Always update currentLocation when the MC moves and currentTime when time passes.
+
+OPERATIONS: Update only — never delete, never add a second entity.`;
 
     static getMainCharacterUserPrompt(messages, currentState, userName, charName) {
         const mc = currentState?.main_character || currentState;
@@ -189,7 +198,9 @@ OUTPUT FORMAT:
   ]
 }
 
-IMPORTANT: Also detect when existing goals are COMPLETED, FAILED, or ABANDONED based on the narrative. Update their status accordingly.`;
+IMPORTANT: Also detect when existing goals are COMPLETED, FAILED, or ABANDONED based on the narrative. Update their status accordingly.
+
+OPERATIONS: Add new goals when they emerge. Update progress/status as narrative evolves. Never delete — set status to "completed"/"failed"/"abandoned" instead.`;
 
     static getGoalsUserPrompt(messages, currentState, userName, charName) {
         const stateJson = Object.keys(currentState).length > 0
@@ -241,7 +252,9 @@ OUTPUT FORMAT:
   ]
 }
 
-NOTE: Set "turn" to 0 — the system will fill in the actual turn number.`;
+NOTE: Set "turn" to 0 — the system will fill in the actual turn number.
+
+OPERATIONS: Insert only — events are historical records. Never update or delete past events.`;
 
     static getEventsUserPrompt(messages, currentState, userName, charName) {
         const stateJson = Object.keys(currentState).length > 0
@@ -256,6 +269,111 @@ ${messages}
 
 Identify any SIGNIFICANT new events from the messages above. Do NOT re-record events already tracked.
 Only record events with importance >= 5. Focus on what the user chose to do, plot developments, and consequences.`;
+    }
+
+    // ==================== Unified (All Categories) ====================
+
+    static UNIFIED_SYSTEM = `You are a narrative memory extraction system for roleplay. Your job is to extract and track information across 5 categories from the conversation in a single pass.
+
+${COMMON_RULES}
+
+OUTPUT FORMAT — a flat JSON object with 5 category keys, each an array of entities. Use an empty array [] for categories with no changes:
+{
+  "characters": [...],
+  "locations": [...],
+  "mainCharacter": [...],
+  "goals": [...],
+  "events": [...]
+}
+
+=== CATEGORY 1: characters (NPCs) ===
+Track NON-PLAYER characters mentioned in the conversation. Do NOT include the user's own character here.
+
+Fields: description (appearance/traits), personality, status (alive/dead/injured/missing + details), relationships (string, e.g. "Kira: romantic tension, Marcus: uneasy alliance"), present ("yes" or "no" — can this character directly interact with the MC right now?)
+
+Importance: 9-10 central plot character/love interest | 6-8 named NPC with plot relevance | 3-5 minor named NPC | 1-2 background character
+
+Operations: Add new characters on first appearance. Update existing characters when their state changes. Never delete — mark status as "dead"/"missing" instead.
+
+=== CATEGORY 2: locations ===
+Track locations mentioned in the conversation.
+
+Fields: description (visual details), atmosphere (mood/sensory), notableFeatures (string, e.g. "ancient oak tree, hidden trapdoor"), connections (string, e.g. "leads to Underground Caverns")
+
+Importance: 9-10 central hub/major plot location | 6-8 named visited location | 3-5 mentioned in passing | 1-2 generic unnamed
+
+Operations: Add new locations when first described. Update when new details are revealed or atmosphere changes. Never delete.
+
+=== CATEGORY 3: mainCharacter ===
+Track the USER's main character — their state, skills, inventory, and current situation. This is always a SINGLE entity with id "main-character". Only include fields that CHANGED — omit unchanged fields.
+
+Fields: description (appearance if changed), skills (string), inventory (string), health (string), conditions (string), buffs (string), currentLocation (where the MC is right now), currentTime (in-world time if known or inferrable, e.g. "early morning", "Day 3, afternoon", "2024-03-15 14:00")
+
+Always importance 10. Always id "main-character".
+
+Operations: Update only — never delete, never add a second entity. Always update currentLocation when the MC moves. Always update currentTime when time passes.
+
+=== CATEGORY 4: goals ===
+Track active goals, quests, and tasks. Also detect when existing goals are COMPLETED, FAILED, or ABANDONED.
+
+Fields: description (what to accomplish), progress (current progress), blockers (what prevents progress), status ("in_progress" | "completed" | "failed" | "abandoned")
+
+Importance: 9-10 main story quest | 6-8 major side quest | 3-5 minor task | 1-2 trivial goal
+
+Operations: Add new goals when they emerge. Update progress/status as the narrative evolves. Never delete — set status to "completed"/"failed"/"abandoned" instead.
+
+=== CATEGORY 5: events ===
+Record SIGNIFICANT events (importance >= 5 only). Do NOT re-record already-tracked events. Set "turn" to 0 — the system fills in the actual turn number.
+
+Fields: description (1-2 sentences), turn (always 0), involvedEntities (string), consequences (story implications), significance (narrative importance)
+
+Importance: 9-10 plot-changing/major revelation | 6-8 significant combat/discovery | 3-5 notable interaction | skip below 5
+
+Operations: Insert only — events are historical records. Never update or delete past events.`;
+
+    static getUnifiedUserPrompt(messages, currentState, userName, charName) {
+        const sections = [];
+
+        // Characters
+        const chars = currentState.characters || {};
+        sections.push(`=== TRACKED CHARACTERS ===\n${
+            Object.keys(chars).length > 0 ? JSON.stringify(chars, null, 2) : '(none)'
+        }`);
+
+        // Locations
+        const locs = currentState.locations || {};
+        sections.push(`=== TRACKED LOCATIONS ===\n${
+            Object.keys(locs).length > 0 ? JSON.stringify(locs, null, 2) : '(none)'
+        }`);
+
+        // Main Character
+        const mc = currentState.mainCharacter || null;
+        sections.push(`=== MAIN CHARACTER ===\n${
+            mc ? JSON.stringify({ main_character: mc }, null, 2) : '(not yet tracked)'
+        }`);
+
+        // Goals
+        const goals = currentState.goals || {};
+        sections.push(`=== TRACKED GOALS ===\n${
+            Object.keys(goals).length > 0 ? JSON.stringify(goals, null, 2) : '(none)'
+        }`);
+
+        // Events
+        const events = currentState.events || {};
+        sections.push(`=== TRACKED EVENTS ===\n${
+            Object.keys(events).length > 0 ? JSON.stringify(events, null, 2) : '(none)'
+        }`);
+
+        return `CURRENT MEMORY STATE:
+${sections.join('\n\n')}
+
+RECENT MESSAGES:
+${messages}
+
+The user's character is "${userName}" — track them ONLY in the mainCharacter category (id "main-character"), not in characters.
+The primary AI character is "${charName}" — DO track them in characters if they have meaningful updates.
+
+Extract all changes across all 5 categories. Output only the diff — new or changed entities. Use empty arrays [] for categories with no changes.`;
     }
 
     // ==================== Dispatcher ====================

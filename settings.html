@@ -133,9 +133,11 @@
 
                 <label>Extraction Model</label>
                 <div class="rp-mem-model-row">
-                    <select id="rp_memory_model" class="text_pole">
-                        <option value="">-- Loading models... --</option>
-                    </select>
+                    <div class="rp-mem-model-search-wrapper">
+                        <input id="rp_memory_model_search" type="text" class="text_pole" placeholder="Search models..." autocomplete="off" />
+                        <input id="rp_memory_model" type="hidden" />
+                        <div id="rp_memory_model_list" class="rp-mem-model-list"></div>
+                    </div>
                     <div id="rp_memory_refresh_models" class="menu_button menu_button_icon" title="Refresh model list">
                         <i class="fa-solid fa-arrows-rotate"></i>
                     </div>
