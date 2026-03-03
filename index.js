@@ -502,9 +502,9 @@ async function injectMemoryPrompt() {
             const recentMessages = getRecentMessageTexts(context, s.messagesPerExtraction * 2);
 
             if (recentMessages.length > 0) {
-                const ranked = await embeddingService.rankEntities(memoryStore, recentMessages);
-                promptText = injector.format(memoryStore, ranked);
-                debugLog('Embedding-based injection:', ranked.length, 'entities ranked');
+                const { ranked, sceneType } = await embeddingService.rankEntities(memoryStore, recentMessages);
+                promptText = injector.format(memoryStore, ranked, sceneType);
+                debugLog('Embedding-based injection:', ranked.length, 'entities ranked, scene:', sceneType);
             } else {
                 promptText = injector.format(memoryStore);
             }

@@ -1,9 +1,12 @@
+import { SCENE_ANCHORS } from './SceneConfig.js';
+
 export class EmbeddingService {
     constructor(apiClient, getSettings) {
         this.apiClient = apiClient;
         this.getSettings = getSettings;
         this._cache = new Map(); // key = "category:entityId" → number[]
         this._contextCache = null; // { hash, embedding }
+        this._sceneAnchors = null; // Map<string, number[]> — scene type → embedding
     }
 
     /**
@@ -53,13 +56,62 @@ export class EmbeddingService {
     }
 
     /**
+     * Ensure scene anchor embeddings are cached. Embeds all SCENE_ANCHORS
+     * values in a single batch API call. Runs once per session (or after model change).
+     */
+    async _ensureSceneAnchors() {
+        if (this._sceneAnchors) return;
+
+        const types = Object.keys(SCENE_ANCHORS);
+        const texts = types.map(t => SCENE_ANCHORS[t]);
+        const embeddings = await this.embedTexts(texts);
+
+        this._sceneAnchors = new Map();
+        for (let i = 0; i < types.length; i++) {
+            this._sceneAnchors.set(types[i], embeddings[i]);
+        }
+    }
+
+    /**
+     * Detect the current scene type by comparing a context embedding
+     * against cached scene anchor embeddings.
+     * @param {number[]} contextEmbedding
+     * @returns {{ type: string, scores: Object<string, number> }}
+     */
+    detectSceneType(contextEmbedding) {
+        if (!this._sceneAnchors) {
+            return { type: 'downtime', scores: {} };
+        }
+
+        const scores = {};
+        let bestType = 'downtime';
+        let bestScore = -Infinity;
+
+        for (const [type, anchorEmb] of this._sceneAnchors.entries()) {
+            const score = this.cosineSimilarity(contextEmbedding, anchorEmb);
+            scores[type] = score;
+            if (score > bestScore) {
+                bestScore = score;
+                bestType = type;
+            }
+        }
+
+        return { type: bestType, scores };
+    }
+
+    /**
      * Rank all tier 1-2 entities by relevance to recent messages.
+     * Also detects the current scene type using the same context embedding.
      * @param {object} memoryStore
      * @param {string[]} recentMessages
-     * @returns {Promise<Array<{category: string, entity: object, score: number}>>}
+     * @returns {Promise<{ranked: Array<{category: string, entity: object, score: number}>, sceneType: string}>}
      */
     async rankEntities(memoryStore, recentMessages) {
         const contextEmbedding = await this.getContextEmbedding(recentMessages);
+
+        // Ensure scene anchors are embedded, then detect scene type
+        await this._ensureSceneAnchors();
+        const sceneInfo = this.detectSceneType(contextEmbedding);
 
         const categories = ['mainCharacter', 'characters', 'locations', 'goals', 'events'];
         const entitiesToRank = [];
@@ -72,7 +124,7 @@ export class EmbeddingService {
         }
 
         if (entitiesToRank.length === 0) {
-            return [];
+            return { ranked: [], sceneType: sceneInfo.type };
         }
 
         // Batch-compute any missing embeddings
@@ -108,7 +160,7 @@ export class EmbeddingService {
 
         // Sort by score descending
         ranked.sort((a, b) => b.score - a.score);
-        return ranked;
+        return { ranked, sceneType: sceneInfo.type };
     }
 
     /**
@@ -201,32 +253,45 @@ export class EmbeddingService {
     }
 
     /**
-     * Clear all cached embeddings (entity + context).
+     * Clear all cached embeddings (entity + context + scene anchors).
      */
     clearCache() {
         this._cache.clear();
         this._contextCache = null;
+        this._sceneAnchors = null;
     }
 
     /**
-     * Serialize entity embeddings for persistence.
+     * Serialize entity embeddings and scene anchors for persistence.
      * Context embeddings are NOT persisted (they change every exchange).
      * Stores the embedding model so we can detect model changes.
-     * @returns {object} { model, embeddings: { "category:entityId": number[] } }
+     * @returns {object} { model, embeddings, sceneAnchors? }
      */
     serialize() {
         const embeddings = {};
         for (const [key, vec] of this._cache.entries()) {
             embeddings[key] = vec;
         }
-        return {
+
+        const result = {
             model: this.getSettings().embeddingModel,
             embeddings,
         };
+
+        // Persist scene anchor embeddings so they don't need re-embedding on reload
+        if (this._sceneAnchors) {
+            const sceneAnchors = {};
+            for (const [type, vec] of this._sceneAnchors.entries()) {
+                sceneAnchors[type] = vec;
+            }
+            result.sceneAnchors = sceneAnchors;
+        }
+
+        return result;
     }
 
     /**
-     * Load persisted entity embeddings.
+     * Load persisted entity embeddings and scene anchors.
      * If the saved model doesn't match the current setting, discard all
      * (embeddings from a different model are meaningless).
      * @param {object|null} savedState - Output of serialize(), or null
@@ -234,6 +299,7 @@ export class EmbeddingService {
     load(savedState) {
         this._cache.clear();
         this._contextCache = null;
+        this._sceneAnchors = null;
 
         if (!savedState || !savedState.embeddings) return;
 
@@ -246,6 +312,15 @@ export class EmbeddingService {
 
         for (const [key, vec] of Object.entries(savedState.embeddings)) {
             this._cache.set(key, vec);
+        }
+
+        // Restore scene anchor embeddings
+        if (savedState.sceneAnchors) {
+            this._sceneAnchors = new Map();
+            for (const [type, vec] of Object.entries(savedState.sceneAnchors)) {
+                this._sceneAnchors.set(type, vec);
+            }
+            console.debug(`[RP Memory] Loaded ${this._sceneAnchors.size} persisted scene anchors`);
         }
 
         console.debug(`[RP Memory] Loaded ${this._cache.size} persisted embeddings`);
