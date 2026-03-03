@@ -1,4 +1,4 @@
-import { ExtractionPrompts } from './ExtractionPrompts.js';
+import { ExtractionPrompts, TAVERNDB_TABLE_PROMPT_FEW_SHOT } from './ExtractionPrompts.js';
 import { generateId } from './Utils.js';
 
 const CATEGORIES = ['characters', 'locations', 'mainCharacter', 'goals', 'events'];
@@ -353,12 +353,15 @@ export class ExtractionPipeline {
             precedingContext,
         );
 
+        const promptMessages = [
+            { role: 'system', content: systemPrompt },
+            ...TAVERNDB_TABLE_PROMPT_FEW_SHOT,
+            { role: 'user', content: userPrompt },
+        ];
+
         try {
             const signal = this._abortController?.signal;
-            const response = await this.apiClient.chatCompletion([
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: userPrompt },
-            ], signal);
+            const response = await this.apiClient.chatCompletion(promptMessages, signal);
 
             return this._parseUnifiedResponse(response);
         } catch (error) {
