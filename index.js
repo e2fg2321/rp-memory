@@ -4,7 +4,7 @@ import { extension_settings, getContext, renderExtensionTemplateAsync,
     saveMetadataDebounced } from '../../../extensions.js';
 import { Popup, POPUP_RESULT } from '../../../popup.js';
 import { SECRET_KEYS, secret_state, findSecret } from '../../../secrets.js';
-import { t, getCurrentLocale, addLocaleData } from '../../../i18n.js';
+import { t, translate, getCurrentLocale, addLocaleData } from '../../../i18n.js';
 import { MemoryStore } from './src/MemoryStore.js';
 import { PromptInjector } from './src/PromptInjector.js';
 import { ExtractionPipeline } from './src/ExtractionPipeline.js';
@@ -109,7 +109,7 @@ function updateSTKeyStatus() {
     $status.show();
 
     if (!secret_state[SECRET_KEYS.OPENROUTER]) {
-        $status.text('No OpenRouter key found — configure in ST API settings')
+        $status.text(t`No OpenRouter key found — configure in ST API settings`)
             .removeClass('rp-mem-key-ok').addClass('rp-mem-key-error');
         return;
     }
@@ -117,10 +117,10 @@ function updateSTKeyStatus() {
     // Key exists in ST — try to resolve it
     resolveApiKey().then(key => {
         if (key) {
-            $status.text('Key available from SillyTavern')
+            $status.text(t`Key available from SillyTavern`)
                 .removeClass('rp-mem-key-error').addClass('rp-mem-key-ok');
         } else {
-            $status.text('Enable "allowKeysExposure" in config.yaml, or enter key manually')
+            $status.text(t`Enable "allowKeysExposure" in config.yaml, or enter key manually`)
                 .removeClass('rp-mem-key-ok').addClass('rp-mem-key-error');
         }
     });
@@ -532,7 +532,7 @@ function renderCategoryEntities(category) {
     const entityList = Object.values(entities);
 
     if (entityList.length === 0) {
-        container.append('<div class="rp-mem-empty-state">No entries yet</div>');
+        container.append(`<div class="rp-mem-empty-state">${escapeHtml(t`No entries yet`)}</div>`);
         return;
     }
 
@@ -545,7 +545,7 @@ function renderCategoryEntities(category) {
 }
 
 function renderEntityCard(category, entity) {
-    const tierLabel = { 1: 'Pinned', 2: 'Active', 3: 'Archived' };
+    const tierLabel = { 1: t`Pinned`, 2: t`Active`, 3: t`Archived` };
     const tierClass = { 1: 'tier-pinned', 2: 'tier-active', 3: 'tier-archived' };
     const hasConflicts = (entity.conflicts || []).some(c => !c.resolved);
 
@@ -560,11 +560,11 @@ function renderEntityCard(category, entity) {
             <span class="rp-mem-entity-name" data-field="name">${escapeHtml(entity.name)}</span>
             <span class="rp-mem-tier-badge" data-field="tier" data-value="${entity.tier}">${tierLabel[entity.tier] || '?'}</span>
             <span class="rp-mem-importance" data-field="importance" data-value="${entity.importance}">${entity.importance}</span>
-            ${hasConflicts ? '<i class="fa-solid fa-triangle-exclamation rp-mem-conflict-icon" title="Has unresolved conflicts"></i>' : ''}
+            ${hasConflicts ? `<i class="fa-solid fa-triangle-exclamation rp-mem-conflict-icon" title="${escapeHtml(t`Has unresolved conflicts`)}"></i>` : ''}
             <div class="rp-mem-entity-actions">
-                <i class="fa-solid fa-pen rp-mem-edit-btn" title="Edit"></i>
-                <i class="fa-solid fa-thumbtack rp-mem-pin-btn" title="Toggle pin"></i>
-                <i class="fa-solid fa-trash rp-mem-delete-btn" title="Delete"></i>
+                <i class="fa-solid fa-pen rp-mem-edit-btn" title="${escapeHtml(t`Edit`)}"></i>
+                <i class="fa-solid fa-thumbtack rp-mem-pin-btn" title="${escapeHtml(t`Toggle pin`)}"></i>
+                <i class="fa-solid fa-trash rp-mem-delete-btn" title="${escapeHtml(t`Delete`)}"></i>
             </div>
         </div>
         <div class="rp-mem-entity-fields" style="display:none;">
@@ -583,7 +583,8 @@ function renderEntityFields(category, fields) {
         // Skip empty objects (legacy data)
         if (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) continue;
 
-        const label = key.charAt(0).toUpperCase() + key.slice(1).replace(/([A-Z])/g, ' $1');
+        const rawLabel = key.charAt(0).toUpperCase() + key.slice(1).replace(/([A-Z])/g, ' $1');
+        const label = translate(rawLabel);
         const displayVal = displayStr(value);
         if (!displayVal) continue;
 
@@ -602,7 +603,7 @@ function renderConflicts() {
     const allConflicts = memoryStore.getConflicts();
 
     if (allConflicts.length === 0) {
-        container.append('<div class="rp-mem-empty-state">No conflicts detected</div>');
+        container.append(`<div class="rp-mem-empty-state">${escapeHtml(t`No conflicts detected`)}</div>`);
         return;
     }
 
@@ -617,19 +618,19 @@ function renderConflictCard(category, entity, conflict) {
     return `
     <div class="rp-mem-conflict-card" data-category="${category}" data-id="${entity.id}" data-field="${escapeHtml(conflict.field)}">
         <div class="rp-mem-conflict-header">
-            ${escapeHtml(entity.name)} &gt; ${escapeHtml(conflict.field)} (Turn ${conflict.detectedTurn})
+            ${escapeHtml(entity.name)} &gt; ${escapeHtml(conflict.field)} (${t`Turn`} ${conflict.detectedTurn})
         </div>
         <div class="rp-mem-conflict-diff">
             <div class="rp-mem-conflict-old">
-                <span class="rp-mem-field-label">Old:</span> ${escapeHtml(JSON.stringify(conflict.oldValue))}
+                <span class="rp-mem-field-label">${t`Old:`}</span> ${escapeHtml(JSON.stringify(conflict.oldValue))}
             </div>
             <div class="rp-mem-conflict-new">
-                <span class="rp-mem-field-label">New:</span> ${escapeHtml(JSON.stringify(conflict.newValue))}
+                <span class="rp-mem-field-label">${t`New:`}</span> ${escapeHtml(JSON.stringify(conflict.newValue))}
             </div>
         </div>
         <div class="rp-mem-conflict-actions">
-            <div class="menu_button rp-mem-conflict-accept" data-category="${category}" data-id="${entity.id}" data-field="${escapeHtml(conflict.field)}">Accept New</div>
-            <div class="menu_button rp-mem-conflict-revert" data-category="${category}" data-id="${entity.id}" data-field="${escapeHtml(conflict.field)}">Keep Old</div>
+            <div class="menu_button rp-mem-conflict-accept" data-category="${category}" data-id="${entity.id}" data-field="${escapeHtml(conflict.field)}">${t`Accept New`}</div>
+            <div class="menu_button rp-mem-conflict-revert" data-category="${category}" data-id="${entity.id}" data-field="${escapeHtml(conflict.field)}">${t`Keep Old`}</div>
         </div>
     </div>`;
 }
@@ -670,11 +671,11 @@ function resolveConflict(category, entityId, field, acceptNew) {
 
 async function openAddEntityDialog(category) {
     const categoryLabels = {
-        mainCharacter: 'Main Character',
-        characters: 'Character (NPC)',
-        locations: 'Location',
-        goals: 'Goal / Task',
-        events: 'Event',
+        mainCharacter: t`Main Character`,
+        characters: t`Character (NPC)`,
+        locations: t`Location`,
+        goals: t`Goal / Task`,
+        events: t`Event`,
     };
 
     // For mainCharacter, check if one already exists
@@ -685,9 +686,10 @@ async function openAddEntityDialog(category) {
 
     try {
         const defaultName = category === 'mainCharacter' ? '{{user}}' : '';
+        const catLabel = categoryLabels[category] || category;
         const name = await Popup.show.input(
-            `Add ${categoryLabels[category] || category}`,
-            'Enter a name:',
+            t`Add ${catLabel}`,
+            t`Enter a name:`,
             defaultName,
         );
 
@@ -813,9 +815,9 @@ function enterEditMode(category, entityId) {
     const $tier = $card.find('.rp-mem-tier-badge');
     $tier.html(`
         <select class="rp-mem-inline-select rp-mem-edit-tier-select">
-            <option value="1" ${entity.tier === 1 ? 'selected' : ''}>Pinned</option>
-            <option value="2" ${entity.tier === 2 ? 'selected' : ''}>Active</option>
-            <option value="3" ${entity.tier === 3 ? 'selected' : ''}>Archived</option>
+            <option value="1" ${entity.tier === 1 ? 'selected' : ''}>${t`Pinned`}</option>
+            <option value="2" ${entity.tier === 2 ? 'selected' : ''}>${t`Active`}</option>
+            <option value="3" ${entity.tier === 3 ? 'selected' : ''}>${t`Archived`}</option>
         </select>
     `);
 
@@ -853,7 +855,7 @@ function enterEditMode(category, entityId) {
             }
             case 'select': {
                 const opts = (def.options || []).map(o =>
-                    `<option value="${o.value}" ${rawValue === o.value ? 'selected' : ''}>${escapeHtml(o.label)}</option>`,
+                    `<option value="${o.value}" ${rawValue === o.value ? 'selected' : ''}>${escapeHtml(translate(o.label))}</option>`,
                 ).join('');
                 inputHtml = `<select class="rp-mem-inline-select" data-edit-field="${def.key}">${opts}</select>`;
                 break;
@@ -862,7 +864,7 @@ function enterEditMode(category, entityId) {
 
         $fields.append(`
             <div class="rp-mem-edit-field-row">
-                <label class="rp-mem-edit-field-label">${escapeHtml(def.label)}</label>
+                <label class="rp-mem-edit-field-label">${escapeHtml(translate(def.label))}</label>
                 ${inputHtml}
             </div>
         `);
@@ -871,8 +873,8 @@ function enterEditMode(category, entityId) {
     // Add save/cancel bar
     $fields.append(`
         <div class="rp-mem-edit-actions">
-            <div class="menu_button rp-mem-save-btn"><i class="fa-solid fa-check"></i> Save</div>
-            <div class="menu_button rp-mem-cancel-btn"><i class="fa-solid fa-xmark"></i> Cancel</div>
+            <div class="menu_button rp-mem-save-btn"><i class="fa-solid fa-check"></i> ${t`Save`}</div>
+            <div class="menu_button rp-mem-cancel-btn"><i class="fa-solid fa-xmark"></i> ${t`Cancel`}</div>
         </div>
     `);
 
@@ -975,8 +977,8 @@ async function deleteEntity(category, entityId) {
     if (!entity) return;
 
     const result = await Popup.show.confirm(
-        `Delete "${escapeHtml(entity.name)}"?`,
-        'This will remove the entity from memory.',
+        t`Delete "${escapeHtml(entity.name)}"?`,
+        t`This will remove the entity from memory.`,
     );
 
     if (result === POPUP_RESULT.AFFIRMATIVE) {
@@ -989,8 +991,8 @@ async function deleteEntity(category, entityId) {
 
 async function clearAllMemory() {
     const result = await Popup.show.confirm(
-        'Clear ALL memory?',
-        'This will remove all memory for this chat. This cannot be undone.',
+        t`Clear ALL memory?`,
+        t`This will remove all memory for this chat. This cannot be undone.`,
     );
 
     if (result === POPUP_RESULT.AFFIRMATIVE) {
@@ -1167,15 +1169,15 @@ function showExtractionIndicator(visible) {
         // Transform extract button into stop button
         $navBtn
             .addClass('extracting')
-            .attr('title', 'Stop Extraction')
-            .html('<i class="fa-solid fa-spinner fa-spin"></i><span>Stop</span>');
+            .attr('title', t`Stop Extraction`)
+            .html(`<i class="fa-solid fa-spinner fa-spin"></i><span>${t`Stop`}</span>`);
     } else {
         $status.hide();
         // Restore extract button
         $navBtn
             .removeClass('extracting')
-            .attr('title', 'Extract Now')
-            .html('<i class="fa-solid fa-wand-magic-sparkles"></i><span>Extract</span>');
+            .attr('title', t`Extract Now`)
+            .html(`<i class="fa-solid fa-wand-magic-sparkles"></i><span>${t`Extract`}</span>`);
     }
 }
 
@@ -1183,7 +1185,7 @@ function showExtractionProgress(chunk, total) {
     const $navBtn = $('.rp-mem-nav-extract-btn');
     $navBtn.html(`<i class="fa-solid fa-spinner fa-spin"></i><span>${chunk}/${total}</span>`);
     const $status = $('#rp_memory_status');
-    $status.html(`<i class="fa-solid fa-spinner fa-spin"></i> Extracting ${chunk}/${total}...`);
+    $status.html(`<i class="fa-solid fa-spinner fa-spin"></i> ${t`Extracting`} ${chunk}/${total}...`);
 }
 
 // ===================== Dynamic Model List =====================
@@ -1195,7 +1197,7 @@ async function loadModelList(forceRefresh = false) {
     }
 
     const $search = $('#rp_memory_model_search');
-    $search.attr('placeholder', 'Loading models...');
+    $search.attr('placeholder', t`Loading models...`);
 
     try {
         const models = await apiClient.fetchModels();
@@ -1203,7 +1205,7 @@ async function loadModelList(forceRefresh = false) {
         models.sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id));
         cachedModelList = models;
         renderModelList(models);
-        $search.attr('placeholder', 'Search models...');
+        $search.attr('placeholder', t`Search models...`);
         // Show friendly name for current selection
         const currentVal = $('#rp_memory_model').val() || getSettings().model;
         if (currentVal) {
@@ -1213,7 +1215,7 @@ async function loadModelList(forceRefresh = false) {
         debugLog(`Loaded ${models.length} models from OpenRouter`);
     } catch (err) {
         console.error('[RP Memory] Failed to fetch models:', err);
-        $search.attr('placeholder', 'Failed to load models');
+        $search.attr('placeholder', t`Failed to load models`);
         toastr.warning(t`Could not load model list from OpenRouter`);
     }
 }
@@ -1230,7 +1232,7 @@ function renderModelList(models, filter = '') {
     $list.empty();
 
     if (filtered.length === 0) {
-        $list.append('<div class="rp-mem-model-item" style="opacity:0.5;cursor:default;">No models found</div>');
+        $list.append(`<div class="rp-mem-model-item" style="opacity:0.5;cursor:default;">${escapeHtml(t`No models found`)}</div>`);
         return;
     }
 
@@ -1368,20 +1370,23 @@ function populateEmbeddingModelDropdown(models, preserveValue) {
 // ===================== Floating Nav + Data Panel =====================
 
 const CATEGORY_DEFS = [
-    { key: 'mainCharacter', icon: 'fa-user', label: 'MC' },
-    { key: 'characters', icon: 'fa-users', label: 'NPCs' },
-    { key: 'locations', icon: 'fa-map-location-dot', label: 'Loc' },
-    { key: 'goals', icon: 'fa-bullseye', label: 'Goals' },
-    { key: 'events', icon: 'fa-timeline', label: 'Events' },
+    { key: 'mainCharacter', icon: 'fa-user', labelKey: 'MC' },
+    { key: 'characters', icon: 'fa-users', labelKey: 'NPCs' },
+    { key: 'locations', icon: 'fa-map-location-dot', labelKey: 'Loc' },
+    { key: 'goals', icon: 'fa-bullseye', labelKey: 'Goals' },
+    { key: 'events', icon: 'fa-timeline', labelKey: 'Events' },
 ];
 
-const CATEGORY_LABELS = {
-    mainCharacter: 'Main Character',
-    characters: 'Characters (NPCs)',
-    locations: 'Locations',
-    goals: 'Goals / Tasks',
-    events: 'Events',
-};
+function getCategoryLabel(key) {
+    const labels = {
+        mainCharacter: t`Main Character`,
+        characters: t`Characters (NPCs)`,
+        locations: t`Locations`,
+        goals: t`Goals / Tasks`,
+        events: t`Events`,
+    };
+    return labels[key] || key;
+}
 
 /**
  * Initialize the bottom-docked floating UI (nav bar + data panel).
@@ -1396,9 +1401,9 @@ function initFloatingUI() {
     // Build category buttons
     const catButtons = CATEGORY_DEFS.map(cat => {
         const count = counts[cat.key] || 0;
-        return `<div class="rp-mem-nav-btn" data-category="${cat.key}" title="${CATEGORY_LABELS[cat.key]}">
+        return `<div class="rp-mem-nav-btn" data-category="${cat.key}" title="${escapeHtml(getCategoryLabel(cat.key))}">
             <i class="fa-solid ${cat.icon}"></i>
-            <span>${cat.label}</span>
+            <span>${escapeHtml(translate(cat.labelKey))}</span>
             <span class="rp-mem-nav-count" data-nav-count="${cat.key}">${count}</span>
         </div>`;
     }).join('');
@@ -1407,16 +1412,16 @@ function initFloatingUI() {
     <div class="rp-mem-wrapper">
         <div class="rp-mem-data-panel hidden"></div>
         <div class="rp-mem-nav collapsed">
-            <i class="fa-solid fa-chevron-up rp-mem-nav-collapse-btn" title="Expand / Collapse"></i>
-            <span class="rp-mem-nav-pill-label">RP Memory</span>
+            <i class="fa-solid fa-chevron-up rp-mem-nav-collapse-btn" title="${escapeHtml(t`Expand / Collapse`)}"></i>
+            <span class="rp-mem-nav-pill-label">${t`RP Memory`}</span>
             <div class="rp-mem-nav-buttons">${catButtons}</div>
             <div class="rp-mem-nav-sep"></div>
             <div class="rp-mem-nav-actions">
-                <div class="rp-mem-nav-btn rp-mem-nav-extract-btn" title="Extract Now">
+                <div class="rp-mem-nav-btn rp-mem-nav-extract-btn" title="${escapeHtml(t`Extract Now`)}">
                     <i class="fa-solid fa-wand-magic-sparkles"></i>
-                    <span>Extract</span>
+                    <span>${t`Extract`}</span>
                 </div>
-                <div class="rp-mem-nav-btn rp-mem-nav-settings-btn" title="Open Settings">
+                <div class="rp-mem-nav-btn rp-mem-nav-settings-btn" title="${escapeHtml(t`Open Settings`)}">
                     <i class="fa-solid fa-gear"></i>
                 </div>
             </div>
@@ -1546,14 +1551,14 @@ function renderPanelCards(category) {
     const $panel = $('.rp-mem-data-panel');
     $panel.empty();
 
-    const title = CATEGORY_LABELS[category] || category;
+    const title = getCategoryLabel(category);
     $panel.append(`<div class="rp-mem-data-panel-title">${escapeHtml(title)}</div>`);
 
     const entities = memoryStore.getAllEntities(category);
     const entityList = Object.values(entities);
 
     if (entityList.length === 0) {
-        $panel.append('<div class="rp-mem-empty-state">No entries yet</div>');
+        $panel.append(`<div class="rp-mem-empty-state">${escapeHtml(t`No entries yet`)}</div>`);
     } else {
         // Sort: pinned (tier 1) first, then by importance descending
         entityList.sort((a, b) => (a.tier - b.tier) || (b.importance - a.importance));
@@ -1569,13 +1574,13 @@ function renderPanelCards(category) {
     $panel.append(`
         <div class="rp-mem-panel-add-btn" data-category="${category}">
             <i class="fa-solid fa-plus"></i>
-            <span>Add ${escapeHtml(title)}</span>
+            <span>${t`Add`} ${escapeHtml(title)}</span>
         </div>
     `);
 }
 
 function buildCardHtml(category, entity) {
-    const tierLabel = { 1: 'Pinned', 2: 'Active', 3: 'Archived' };
+    const tierLabel = { 1: t`Pinned`, 2: t`Active`, 3: t`Archived` };
     const tierClass = entity.tier === 1 ? 'tier-pinned' : (entity.tier === 3 ? 'tier-archived' : '');
 
     // Build grid items from fields
@@ -1586,7 +1591,8 @@ function buildCardHtml(category, entity) {
             if (Array.isArray(value) && value.length === 0) continue;
             if (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) continue;
 
-            const label = key.charAt(0).toUpperCase() + key.slice(1).replace(/([A-Z])/g, ' $1');
+            const rawLabel = key.charAt(0).toUpperCase() + key.slice(1).replace(/([A-Z])/g, ' $1');
+            const label = translate(rawLabel);
             const displayVal = displayStr(value);
             if (!displayVal) continue;
 
@@ -1606,7 +1612,7 @@ function buildCardHtml(category, entity) {
             <span class="rp-mem-card-importance">${entity.importance}</span>
         </div>
         <div class="rp-mem-card-body">
-            ${gridItems || '<span class="rp-mem-empty-state" style="padding:4px;font-size:0.8em;">No details</span>'}
+            ${gridItems || `<span class="rp-mem-empty-state" style="padding:4px;font-size:0.8em;">${escapeHtml(t`No details`)}</span>`}
         </div>
     </div>`;
 }
@@ -1659,7 +1665,7 @@ function openCardEditOverlay(category, entityId) {
             }
             case 'select': {
                 const opts = (def.options || []).map(o =>
-                    `<option value="${o.value}" ${rawValue === o.value ? 'selected' : ''}>${escapeHtml(o.label)}</option>`,
+                    `<option value="${o.value}" ${rawValue === o.value ? 'selected' : ''}>${escapeHtml(translate(o.label))}</option>`,
                 ).join('');
                 inputHtml = `<select data-edit-field="${def.key}">${opts}</select>`;
                 break;
@@ -1668,7 +1674,7 @@ function openCardEditOverlay(category, entityId) {
 
         fieldInputs += `
             <div class="rp-mem-edit-dialog-row">
-                <label>${escapeHtml(def.label)}</label>
+                <label>${escapeHtml(translate(def.label))}</label>
                 ${inputHtml}
             </div>`;
     }
@@ -1680,19 +1686,19 @@ function openCardEditOverlay(category, entityId) {
 
             <div class="rp-mem-edit-dialog-meta">
                 <div class="rp-mem-edit-dialog-row">
-                    <label>Name</label>
+                    <label>${t`Name`}</label>
                     <input type="text" class="rp-mem-overlay-name" value="${escapeHtml(entity.name)}" />
                 </div>
                 <div class="rp-mem-edit-dialog-row">
-                    <label>Tier</label>
+                    <label>${t`Tier`}</label>
                     <select class="rp-mem-overlay-tier">
-                        <option value="1" ${entity.tier === 1 ? 'selected' : ''}>Pinned</option>
-                        <option value="2" ${entity.tier === 2 ? 'selected' : ''}>Active</option>
-                        <option value="3" ${entity.tier === 3 ? 'selected' : ''}>Archived</option>
+                        <option value="1" ${entity.tier === 1 ? 'selected' : ''}>${t`Pinned`}</option>
+                        <option value="2" ${entity.tier === 2 ? 'selected' : ''}>${t`Active`}</option>
+                        <option value="3" ${entity.tier === 3 ? 'selected' : ''}>${t`Archived`}</option>
                     </select>
                 </div>
                 <div class="rp-mem-edit-dialog-row">
-                    <label>Importance</label>
+                    <label>${t`Importance`}</label>
                     <input type="number" class="rp-mem-overlay-importance" min="1" max="10" step="0.5" value="${entity.importance}" />
                 </div>
             </div>
@@ -1700,9 +1706,9 @@ function openCardEditOverlay(category, entityId) {
             ${fieldInputs}
 
             <div class="rp-mem-edit-dialog-actions">
-                <div class="menu_button rp-mem-dialog-save"><i class="fa-solid fa-check"></i> Save</div>
-                <div class="menu_button rp-mem-dialog-cancel"><i class="fa-solid fa-xmark"></i> Cancel</div>
-                <div class="menu_button rp-mem-dialog-delete"><i class="fa-solid fa-trash"></i> Delete</div>
+                <div class="menu_button rp-mem-dialog-save"><i class="fa-solid fa-check"></i> ${t`Save`}</div>
+                <div class="menu_button rp-mem-dialog-cancel"><i class="fa-solid fa-xmark"></i> ${t`Cancel`}</div>
+                <div class="menu_button rp-mem-dialog-delete"><i class="fa-solid fa-trash"></i> ${t`Delete`}</div>
             </div>
         </div>
     </div>`;
@@ -1737,9 +1743,10 @@ function bindEditOverlayListeners() {
         const entity = memoryStore.getEntity(category, entityId);
         if (!entity) return;
 
+        const entityName = escapeHtml(entity.name);
         const result = await Popup.show.confirm(
-            `Delete "${escapeHtml(entity.name)}"?`,
-            'This will remove the entity from memory.',
+            t`Delete "${entityName}"?`,
+            t`This will remove the entity from memory.`,
         );
 
         if (result === POPUP_RESULT.AFFIRMATIVE) {

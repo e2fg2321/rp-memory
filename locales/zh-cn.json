@@ -1,6 +1,7 @@
 {
     "RP Memory": "RP 记忆",
     "Extracting...": "提取中...",
+    "Extracting": "提取中",
     "Enable RP Memory": "启用 RP 记忆",
     "Memory": "记忆",
     "Settings": "设置",
@@ -11,6 +12,8 @@
     "Locations": "地点",
     "Active Goals / Tasks": "活跃目标 / 任务",
     "Major Events": "重大事件",
+    "Goals / Tasks": "目标 / 任务",
+    "Events": "事件",
 
     "[title]Set up main character": "设置主角",
     "[title]Add character": "添加角色",
@@ -21,6 +24,7 @@
 
     "Panel": "面板",
     "Extract Now": "立即提取",
+    "Extract": "提取",
     "Depth:": "深度：",
     "0 = all": "0 = 全部",
     "[title]How many exchanges to extract (0 = full history)": "要提取多少轮对话（0 = 全部历史）",
@@ -30,6 +34,10 @@
     "OpenRouter API Key": "OpenRouter API 密钥",
     "Extraction Model": "提取模型",
     "[placeholder]Search models...": "搜索模型...",
+    "Search models...": "搜索模型...",
+    "Loading models...": "加载模型中...",
+    "Failed to load models": "加载模型失败",
+    "No models found": "未找到模型",
     "[title]Refresh model list": "刷新模型列表",
     "Test Connection": "测试连接",
 
@@ -71,12 +79,51 @@
     "Extraction stopped": "提取已停止",
     "Could not load model list from OpenRouter": "无法从 OpenRouter 加载模型列表",
     "Could not load embedding model list from OpenRouter": "无法从 OpenRouter 加载嵌入模型列表",
+    "No OpenRouter key found — configure in ST API settings": "未找到 OpenRouter 密钥 — 请在 ST API 设置中配置",
+    "Key available from SillyTavern": "可使用 SillyTavern 的密钥",
+    "Enable \"allowKeysExposure\" in config.yaml, or enter key manually": "请在 config.yaml 中启用 \"allowKeysExposure\"，或手动输入密钥",
+    "Stop Extraction": "停止提取",
+    "Stop": "停止",
+    "Open Settings": "打开设置",
+    "Expand / Collapse": "展开 / 折叠",
 
     "Pinned": "置顶",
     "Active": "活跃",
     "Archived": "归档",
     "No entries yet": "暂无条目",
     "No details": "暂无详情",
+
+    "Has unresolved conflicts": "存在未解决的冲突",
+    "Edit": "编辑",
+    "Toggle pin": "切换置顶",
+    "Delete": "删除",
+    "Save": "保存",
+    "Cancel": "取消",
+    "Add": "添加",
+    "Name": "名称",
+    "Tier": "层级",
+    "Importance": "重要度",
+
+    "Character (NPC)": "角色（NPC）",
+    "Location": "地点",
+    "Goal / Task": "目标 / 任务",
+    "Event": "事件",
+    "Add ${0}": "添加${0}",
+    "Enter a name:": "输入名称：",
+
+    "Old:": "旧值：",
+    "New:": "新值：",
+    "Accept New": "接受新值",
+    "Keep Old": "保留旧值",
+    "Delete \"${0}\"?": "删除 \"${0}\"？",
+    "This will remove the entity from memory.": "这将从记忆中移除该实体。",
+    "Clear ALL memory?": "清除所有记忆？",
+    "This will remove all memory for this chat. This cannot be undone.": "这将移除此聊天的所有记忆。此操作无法撤销。",
+
+    "MC": "主角",
+    "NPCs": "NPC",
+    "Loc": "地点",
+    "Goals": "目标",
 
     "Description": "描述",
     "Personality": "性格",
@@ -95,5 +142,13 @@
     "Turn": "回合",
     "Involved Entities": "相关实体",
     "Consequences": "后果",
-    "Significance": "重要性"
+    "Significance": "重要性",
+    "Current Location": "当前位置",
+    "Current Time": "当前时间",
+    "Present": "在场",
+
+    "In Progress": "进行中",
+    "Completed": "已完成",
+    "Failed": "失败",
+    "Abandoned": "已放弃"
 }
