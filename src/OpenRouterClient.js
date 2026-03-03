@@ -73,8 +73,9 @@ export class OpenRouterClient {
                     }
 
                     const err = new Error(`OpenRouter API error (${response.status}): ${errMsg}`);
-                    // Don't retry client errors (4xx) — content filters, bad requests, auth failures won't change on retry
-                    if (response.status >= 400 && response.status < 500) {
+                    // Don't retry deterministic client errors — auth, bad request, not found, etc.
+                    // 429 is handled above; other 4xx that aren't transient should not retry
+                    if ([400, 401, 403, 404].includes(response.status)) {
                         err._noRetry = true;
                     }
                     throw err;
@@ -85,14 +86,12 @@ export class OpenRouterClient {
                 const finishReason = data.choices?.[0]?.finish_reason;
 
                 if (!content) {
-                    const err = new Error(
+                    // Content filter false positives are common — allow retry
+                    throw new Error(
                         finishReason === 'content_filter'
                             ? 'Content filtered by model provider'
                             : 'Empty response from OpenRouter',
                     );
-                    // Content filter won't change on retry
-                    if (finishReason === 'content_filter') err._noRetry = true;
-                    throw err;
                 }
 
                 return content;
