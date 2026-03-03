@@ -1105,6 +1105,7 @@ async function onNewMessage() {
 
     // Kick off async extraction — does NOT block chat
     triggerExtraction(context).catch(err => {
+        if (err?.name === 'AbortError') return; // User stopped — already handled
         console.error('[RP Memory] Extraction failed:', err);
         toastr.error(tt`Memory extraction failed. Check console for details.`);
     });
@@ -1141,6 +1142,12 @@ async function triggerExtraction(context) {
 
         debugLog('Extraction complete');
         toastr.success(tt`Memory updated`, 'RP Memory', { timeOut: 2000 });
+    } catch (err) {
+        if (err?.name === 'AbortError') {
+            debugLog('Extraction aborted by user');
+            return;
+        }
+        throw err;
     } finally {
         memoryStore.setExtractionInProgress(false);
         showExtractionIndicator(false);
@@ -1198,14 +1205,24 @@ async function forceExtract() {
         const { chatId, characterId } = context;
         const depth = s.manualExtractionExchanges;
 
+        let extractedCount = depth;
         if (depth > 0) {
             // Extract specific number of exchanges
             await pipeline.extractRange(context, depth);
         } else {
-            // Full history — chunked
-            await pipeline.extractFullHistory(context, (chunk, total) => {
-                showExtractionProgress(chunk, total);
-            });
+            // depth=0: extract unextracted exchanges (since last extraction)
+            const unextracted = memoryStore.getTurnCounter() - memoryStore.getLastExtractionTurn();
+            if (unextracted > 0 && memoryStore.getLastExtractionTurn() > 0) {
+                // Extract only what's new since last extraction
+                extractedCount = unextracted;
+                await pipeline.extractRange(context, unextracted);
+            } else {
+                // Never extracted before — full history, chunked
+                extractedCount = 0;
+                await pipeline.extractFullHistory(context, (chunk, total) => {
+                    showExtractionProgress(chunk, total);
+                });
+            }
         }
 
         // Verify context hasn't changed during extraction
@@ -1220,9 +1237,16 @@ async function forceExtract() {
         injectMemoryPrompt();
         renderMemoryUI();
 
-        const label = depth > 0 ? tt`Last ${depth} exchanges extracted` : tt`Full history extracted`;
+        const label = extractedCount > 0 ? tt`Last ${extractedCount} exchanges extracted` : tt`Full history extracted`;
         debugLog('Manual extraction complete');
         toastr.success(label, 'RP Memory', { timeOut: 3000 });
+    } catch (err) {
+        if (err?.name === 'AbortError') {
+            debugLog('Manual extraction aborted by user');
+            return;
+        }
+        console.error('[RP Memory] Manual extraction failed:', err);
+        toastr.error(tt`Memory extraction failed. Check console for details.`);
     } finally {
         memoryStore.setExtractionInProgress(false);
         showExtractionIndicator(false);

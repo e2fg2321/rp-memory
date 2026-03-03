@@ -421,31 +421,31 @@ ${COMMON_RULES_ZH}
         // Characters
         const chars = currentState.characters || {};
         sections.push(`=== TRACKED CHARACTERS ===\n${
-            Object.keys(chars).length > 0 ? JSON.stringify(chars, null, 2) : '(none)'
+            Object.keys(chars).length > 0 ? JSON.stringify(chars) : '(none)'
         }`);
 
         // Locations
         const locs = currentState.locations || {};
         sections.push(`=== TRACKED LOCATIONS ===\n${
-            Object.keys(locs).length > 0 ? JSON.stringify(locs, null, 2) : '(none)'
+            Object.keys(locs).length > 0 ? JSON.stringify(locs) : '(none)'
         }`);
 
         // Main Character
         const mc = currentState.mainCharacter || null;
         sections.push(`=== MAIN CHARACTER ===\n${
-            mc ? JSON.stringify({ main_character: mc }, null, 2) : '(not yet tracked)'
+            mc ? JSON.stringify({ main_character: mc }) : '(not yet tracked)'
         }`);
 
         // Goals
         const goals = currentState.goals || {};
         sections.push(`=== TRACKED GOALS ===\n${
-            Object.keys(goals).length > 0 ? JSON.stringify(goals, null, 2) : '(none)'
+            Object.keys(goals).length > 0 ? JSON.stringify(goals) : '(none)'
         }`);
 
         // Events
         const events = currentState.events || {};
         sections.push(`=== TRACKED EVENTS ===\n${
-            Object.keys(events).length > 0 ? JSON.stringify(events, null, 2) : '(none)'
+            Object.keys(events).length > 0 ? JSON.stringify(events) : '(none)'
         }`);
 
         if (lang === 'zh') {

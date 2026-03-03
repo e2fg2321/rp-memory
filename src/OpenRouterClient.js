@@ -84,6 +84,10 @@ export class OpenRouterClient {
 
                 return content;
             } catch (error) {
+                // Abort errors must propagate immediately — never retry
+                if (error.name === 'AbortError') {
+                    throw error;
+                }
                 lastError = error;
                 if (attempt < settings.maxRetries) {
                     const backoff = Math.pow(2, attempt) * 1000;

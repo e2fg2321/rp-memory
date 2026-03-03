@@ -26,8 +26,8 @@
     "Extract Now": "立即提取",
     "Extract": "提取",
     "Depth:": "深度：",
-    "0 = all": "0 = 全部",
-    "[title]How many exchanges to extract (0 = full history)": "要提取多少轮对话（0 = 全部历史）",
+    "0 = since last": "0 = 上次之后",
+    "[title]How many exchanges to extract (0 = since last extraction)": "要提取多少轮对话（0 = 从上次提取之后）",
     "Clear All": "清除全部",
 
     "Use SillyTavern's OpenRouter key": "使用 SillyTavern 的 OpenRouter 密钥",

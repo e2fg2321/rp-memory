@@ -19,7 +19,7 @@ export class ExtractionPipeline {
     abort() {
         if (this._abortController) {
             this._abortController.abort();
-            this._abortController = null;
+            // Don't null out here — let the finally blocks in extract/extractRange/extractFullHistory handle cleanup
         }
     }
 
@@ -42,8 +42,8 @@ export class ExtractionPipeline {
         // Step 2: Format messages with sender attribution and priority markers
         const formattedMessages = this._formatMessages(recentMessages, context.name1, context.name2, settings);
 
-        // Step 3: Snapshot current memory state for diff-mode prompts
-        const currentState = this.memoryStore.serialize();
+        // Step 3: Build trimmed memory state for diff-mode prompts (budget-aware)
+        const currentState = this._buildExtractionState();
 
         // Step 4: Single unified extraction call (with abort support)
         this._abortController = new AbortController();
@@ -101,7 +101,7 @@ export class ExtractionPipeline {
         }
 
         const formattedMessages = this._formatMessages(recentMessages, context.name1, context.name2, settings);
-        const currentState = this.memoryStore.serialize();
+        const currentState = this._buildExtractionState();
 
         this._abortController = new AbortController();
         let result;
@@ -159,39 +159,97 @@ export class ExtractionPipeline {
 
         this._abortController = new AbortController();
 
-        for (let ci = 0; ci < chunks.length; ci++) {
-            // Check for abort between chunks
-            if (this._abortController?.signal?.aborted) {
-                console.debug('[RP Memory] Full extraction aborted between chunks');
-                break;
-            }
+        try {
+            for (let ci = 0; ci < chunks.length; ci++) {
+                if (onProgress) onProgress(ci + 1, chunks.length);
 
-            if (onProgress) onProgress(ci + 1, chunks.length);
+                const formattedMessages = this._formatMessages(chunks[ci], context.name1, context.name2, settings);
+                // Fresh trimmed state each chunk — includes results from prior chunks
+                const currentState = this._buildExtractionState();
 
-            const formattedMessages = this._formatMessages(chunks[ci], context.name1, context.name2, settings);
-            // Fresh state snapshot each chunk — includes results from prior chunks
-            const currentState = this.memoryStore.serialize();
+                // _extractAll throws AbortError if aborted — breaks the loop naturally
+                const result = await this._extractAll(formattedMessages, currentState, context);
 
-            const result = await this._extractAll(formattedMessages, currentState, context);
-
-            if (result) {
-                for (const category of CATEGORIES) {
-                    const entities = result[category];
-                    if (entities?.length) {
-                        if (settings.debugMode) {
-                            console.debug(`[RP Memory] Chunk ${ci + 1}/${chunks.length} — ${category}: ${entities.length} entities`, entities);
-                        }
-                        try {
-                            this._mergeResult(category, { entities });
-                        } catch (mergeError) {
-                            console.warn(`[RP Memory] Merge failed for ${category} in chunk ${ci + 1}:`, mergeError);
+                if (result) {
+                    for (const category of CATEGORIES) {
+                        const entities = result[category];
+                        if (entities?.length) {
+                            if (settings.debugMode) {
+                                console.debug(`[RP Memory] Chunk ${ci + 1}/${chunks.length} — ${category}: ${entities.length} entities`, entities);
+                            }
+                            try {
+                                this._mergeResult(category, { entities });
+                            } catch (mergeError) {
+                                console.warn(`[RP Memory] Merge failed for ${category} in chunk ${ci + 1}:`, mergeError);
+                            }
                         }
                     }
                 }
             }
+        } finally {
+            this._abortController = null;
+        }
+    }
+
+    /**
+     * Build a trimmed memory state for extraction prompts.
+     * Strips internal bookkeeping fields, skips archived (Tier 3) entities,
+     * and caps events to the most recent 15.
+     */
+    _buildExtractionState() {
+        const MAX_EVENTS = 15;
+
+        const stripEntity = (entity) => ({
+            name: entity.name,
+            importance: entity.importance,
+            fields: entity.fields || {},
+        });
+
+        const state = {
+            characters: {},
+            locations: {},
+            mainCharacter: null,
+            goals: {},
+            events: {},
+        };
+
+        // Characters — skip Tier 3 (archived)
+        const allChars = this.memoryStore.getAllEntities('characters');
+        for (const [id, entity] of Object.entries(allChars)) {
+            if (entity.tier >= 3) continue;
+            state.characters[id] = stripEntity(entity);
         }
 
-        this._abortController = null;
+        // Locations — skip Tier 3
+        const allLocs = this.memoryStore.getAllEntities('locations');
+        for (const [id, entity] of Object.entries(allLocs)) {
+            if (entity.tier >= 3) continue;
+            state.locations[id] = stripEntity(entity);
+        }
+
+        // Main Character — always include
+        const mc = this.memoryStore.getMainCharacter();
+        if (mc) {
+            state.mainCharacter = stripEntity(mc);
+        }
+
+        // Goals — skip Tier 3
+        const allGoals = this.memoryStore.getAllEntities('goals');
+        for (const [id, entity] of Object.entries(allGoals)) {
+            if (entity.tier >= 3) continue;
+            state.goals[id] = stripEntity(entity);
+        }
+
+        // Events — skip Tier 3, cap to most recent N
+        const allEvents = Object.entries(this.memoryStore.getAllEntities('events'))
+            .filter(([, entity]) => entity.tier < 3)
+            .sort(([, a], [, b]) => (b.fields.turn || b.createdTurn || 0) - (a.fields.turn || a.createdTurn || 0))
+            .slice(0, MAX_EVENTS);
+        for (const [id, entity] of allEvents) {
+            state.events[id] = stripEntity(entity);
+        }
+
+        return state;
     }
 
     /**
@@ -250,7 +308,7 @@ export class ExtractionPipeline {
         } catch (error) {
             if (error.name === 'AbortError') {
                 console.debug('[RP Memory] Extraction aborted by user');
-                return null;
+                throw error; // Propagate so callers can stop immediately
             }
             console.warn('[RP Memory] Unified extraction call failed:', error);
             return null;
