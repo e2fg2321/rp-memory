@@ -72,20 +72,33 @@ export class OpenRouterClient {
                         continue;
                     }
 
-                    throw new Error(`OpenRouter API error (${response.status}): ${errMsg}`);
+                    const err = new Error(`OpenRouter API error (${response.status}): ${errMsg}`);
+                    // Don't retry client errors (4xx) — content filters, bad requests, auth failures won't change on retry
+                    if (response.status >= 400 && response.status < 500) {
+                        err._noRetry = true;
+                    }
+                    throw err;
                 }
 
                 const data = await response.json();
                 const content = data.choices?.[0]?.message?.content;
+                const finishReason = data.choices?.[0]?.finish_reason;
 
                 if (!content) {
-                    throw new Error('Empty response from OpenRouter');
+                    const err = new Error(
+                        finishReason === 'content_filter'
+                            ? 'Content filtered by model provider'
+                            : 'Empty response from OpenRouter',
+                    );
+                    // Content filter won't change on retry
+                    if (finishReason === 'content_filter') err._noRetry = true;
+                    throw err;
                 }
 
                 return content;
             } catch (error) {
-                // Abort errors must propagate immediately — never retry
-                if (error.name === 'AbortError') {
+                // Abort errors and non-retryable errors propagate immediately
+                if (error.name === 'AbortError' || error._noRetry) {
                     throw error;
                 }
                 lastError = error;
