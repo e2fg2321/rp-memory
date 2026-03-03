@@ -415,68 +415,54 @@ ${COMMON_RULES_ZH}
 
 操作：仅插入 — 事件是历史记录。永远不要更新或删除过去的事件。`;
 
-    static getUnifiedUserPrompt(messages, currentState, userName, charName, lang = 'en', scenarioContext = '') {
-        const sections = [];
+    static getUnifiedUserPrompt(messages, currentState, userName, charName, lang = 'en', scenarioContext = '', precedingContext = '') {
+        const stateSections = [];
 
         // Characters
         const chars = currentState.characters || {};
-        sections.push(`=== TRACKED CHARACTERS ===\n${
-            Object.keys(chars).length > 0 ? JSON.stringify(chars) : '(none)'
-        }`);
+        if (Object.keys(chars).length > 0) stateSections.push(`=== PINNED CHARACTERS ===\n${JSON.stringify(chars)}`);
 
         // Locations
         const locs = currentState.locations || {};
-        sections.push(`=== TRACKED LOCATIONS ===\n${
-            Object.keys(locs).length > 0 ? JSON.stringify(locs) : '(none)'
-        }`);
+        if (Object.keys(locs).length > 0) stateSections.push(`=== PINNED LOCATIONS ===\n${JSON.stringify(locs)}`);
 
         // Main Character
         const mc = currentState.mainCharacter || null;
-        sections.push(`=== MAIN CHARACTER ===\n${
-            mc ? JSON.stringify({ main_character: mc }) : '(not yet tracked)'
-        }`);
+        if (mc) stateSections.push(`=== MAIN CHARACTER ===\n${JSON.stringify({ main_character: mc })}`);
 
         // Goals
         const goals = currentState.goals || {};
-        sections.push(`=== TRACKED GOALS ===\n${
-            Object.keys(goals).length > 0 ? JSON.stringify(goals) : '(none)'
-        }`);
+        if (Object.keys(goals).length > 0) stateSections.push(`=== PINNED GOALS ===\n${JSON.stringify(goals)}`);
 
         // Events
         const events = currentState.events || {};
-        sections.push(`=== TRACKED EVENTS ===\n${
-            Object.keys(events).length > 0 ? JSON.stringify(events) : '(none)'
-        }`);
+        if (Object.keys(events).length > 0) stateSections.push(`=== PINNED EVENTS ===\n${JSON.stringify(events)}`);
 
-        const scenarioBlock = scenarioContext
-            ? (lang === 'zh'
-                ? `=== 场景背景（参考信息 — 用于理解上下文和重要度评估）===\n${scenarioContext}`
-                : `=== SCENARIO CONTEXT (reference — use for understanding context and importance scoring) ===\n${scenarioContext}`)
-            : '';
+        const pinnedBlock = stateSections.length > 0 ? stateSections.join('\n\n') : '';
 
         if (lang === 'zh') {
-            return `${scenarioBlock ? scenarioBlock + '\n\n' : ''}当前记忆状态：
-${sections.join('\n\n')}
-
-最近的消息：
-${messages}
-
-用户的角色是 "${userName}" — 仅在 mainCharacter 类别中追踪他们（id 为 "main-character"），不要放在 characters 中。
+            const parts = [];
+            if (scenarioContext) parts.push(`=== 角色设定 ===\n${scenarioContext}`);
+            if (pinnedBlock) parts.push(`置顶实体（不要重复创建）：\n${pinnedBlock}`);
+            if (precedingContext) parts.push(`=== 前文（仅供上下文参考，不从此部分提取）===\n${precedingContext}`);
+            parts.push(`=== 需要提取的消息 ===\n${messages}`);
+            parts.push(`用户的角色是 "${userName}" — 仅在 mainCharacter 类别中追踪他们（id 为 "main-character"），不要放在 characters 中。
 主要 AI 角色是 "${charName}" — 如果有重要更新，请在 characters 中追踪他们。
 
-提取所有5个类别中的变更。仅输出差异 — 新增或变更的实体。没有变更的类别使用空数组 []。`;
+提取所有5个类别中的变更。仅输出差异 — 新增或变更的实体。没有变更的类别使用空数组 []。`);
+            return parts.join('\n\n');
         }
 
-        return `${scenarioBlock ? scenarioBlock + '\n\n' : ''}CURRENT MEMORY STATE:
-${sections.join('\n\n')}
-
-RECENT MESSAGES:
-${messages}
-
-The user's character is "${userName}" — track them ONLY in the mainCharacter category (id "main-character"), not in characters.
+        const parts = [];
+        if (scenarioContext) parts.push(`=== CHARACTER SYSTEM PROMPT ===\n${scenarioContext}`);
+        if (pinnedBlock) parts.push(`PINNED ENTITIES (do not re-create):\n${pinnedBlock}`);
+        if (precedingContext) parts.push(`=== PRECEDING CONTEXT (for reference only — do NOT extract from this section) ===\n${precedingContext}`);
+        parts.push(`=== MESSAGES TO EXTRACT FROM ===\n${messages}`);
+        parts.push(`The user's character is "${userName}" — track them ONLY in the mainCharacter category (id "main-character"), not in characters.
 The primary AI character is "${charName}" — DO track them in characters if they have meaningful updates.
 
-Extract all changes across all 5 categories. Output only the diff — new or changed entities. Use empty arrays [] for categories with no changes.`;
+Extract all changes across all 5 categories. Output only the diff — new or changed entities. Use empty arrays [] for categories with no changes.`);
+        return parts.join('\n\n');
     }
 
     // ==================== Dispatcher ====================

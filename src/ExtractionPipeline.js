@@ -30,29 +30,40 @@ export class ExtractionPipeline {
     async extract(context) {
         const settings = this.getSettings();
         const chat = context.chat;
+        const CONTEXT_PADDING = 5; // extra exchanges for context
 
-        // Step 1: Gather recent messages (setting is in exchanges, each exchange = 2 messages)
-        const recentMessages = this._getRecentMessages(chat, settings.messagesPerExtraction * 2);
+        // Step 1: Gather target messages + context padding
+        const targetCount = settings.messagesPerExtraction * 2;
+        const totalCount = targetCount + (CONTEXT_PADDING * 2);
+        const allRecent = this._getRecentMessages(chat, totalCount);
 
-        if (recentMessages.length === 0) {
+        if (allRecent.length === 0) {
             console.debug('[RP Memory] No messages to extract from');
             return;
         }
 
-        // Step 2: Format messages with sender attribution and priority markers
-        const formattedMessages = this._formatMessages(recentMessages, context.name1, context.name2, settings);
+        // Split into context (older) and target (newer) messages
+        const splitPoint = Math.max(0, allRecent.length - targetCount);
+        const contextMessages = allRecent.slice(0, splitPoint);
+        const targetMessages = allRecent.slice(splitPoint);
 
-        // Step 3: Build trimmed memory state for diff-mode prompts (budget-aware)
+        // Step 2: Format both sections
+        const formattedTarget = this._formatMessages(targetMessages, context.name1, context.name2, settings);
+        const formattedContext = contextMessages.length > 0
+            ? this._formatMessages(contextMessages, context.name1, context.name2, settings)
+            : '';
+
+        // Step 3: Build Tier 1 pinned state
         const currentState = this._buildExtractionState();
 
-        // Step 4: Build scenario context (character card, world info, system prompt)
-        const scenarioContext = await this._buildScenarioContext(context);
+        // Step 4: Character system prompt
+        const scenarioContext = this._buildScenarioContext(context);
 
         // Step 5: Single unified extraction call (with abort support)
         this._abortController = new AbortController();
         let result;
         try {
-            result = await this._extractAll(formattedMessages, currentState, context, scenarioContext);
+            result = await this._extractAll(formattedTarget, currentState, context, scenarioContext, formattedContext);
         } finally {
             this._abortController = null;
         }
@@ -90,27 +101,36 @@ export class ExtractionPipeline {
     async extractRange(context, exchanges) {
         const settings = this.getSettings();
         const chat = context.chat;
-        const messageCount = exchanges * 2;
+        const CONTEXT_PADDING = 5;
+        const targetCount = exchanges * 2;
+        const totalCount = targetCount + (CONTEXT_PADDING * 2);
 
-        const recentMessages = this._getRecentMessages(chat, messageCount);
+        const allRecent = this._getRecentMessages(chat, totalCount);
 
-        if (recentMessages.length === 0) {
+        if (allRecent.length === 0) {
             console.debug('[RP Memory] No messages to extract from');
             return;
         }
 
+        const splitPoint = Math.max(0, allRecent.length - targetCount);
+        const contextMessages = allRecent.slice(0, splitPoint);
+        const targetMessages = allRecent.slice(splitPoint);
+
         if (settings.debugMode) {
-            console.debug(`[RP Memory] Manual extraction: ${recentMessages.length} messages (${exchanges} exchanges)`);
+            console.debug(`[RP Memory] Manual extraction: ${targetMessages.length} messages (${exchanges} exchanges) + ${contextMessages.length} context messages`);
         }
 
-        const formattedMessages = this._formatMessages(recentMessages, context.name1, context.name2, settings);
+        const formattedTarget = this._formatMessages(targetMessages, context.name1, context.name2, settings);
+        const formattedContext = contextMessages.length > 0
+            ? this._formatMessages(contextMessages, context.name1, context.name2, settings)
+            : '';
         const currentState = this._buildExtractionState();
-        const scenarioContext = await this._buildScenarioContext(context);
+        const scenarioContext = this._buildScenarioContext(context);
 
         this._abortController = new AbortController();
         let result;
         try {
-            result = await this._extractAll(formattedMessages, currentState, context, scenarioContext);
+            result = await this._extractAll(formattedTarget, currentState, context, scenarioContext, formattedContext);
         } finally {
             this._abortController = null;
         }
@@ -162,7 +182,7 @@ export class ExtractionPipeline {
         }
 
         // Build scenario context once — same character/world for all chunks
-        const scenarioContext = await this._buildScenarioContext(context);
+        const scenarioContext = this._buildScenarioContext(context);
 
         this._abortController = new AbortController();
 
@@ -170,12 +190,16 @@ export class ExtractionPipeline {
             for (let ci = 0; ci < chunks.length; ci++) {
                 if (onProgress) onProgress(ci + 1, chunks.length);
 
-                const formattedMessages = this._formatMessages(chunks[ci], context.name1, context.name2, settings);
-                // Fresh trimmed state each chunk — includes results from prior chunks
+                const formattedTarget = this._formatMessages(chunks[ci], context.name1, context.name2, settings);
+                // Use previous chunk as context padding (if available)
+                const formattedContext = ci > 0
+                    ? this._formatMessages(chunks[ci - 1], context.name1, context.name2, settings)
+                    : '';
+                // Fresh Tier 1 state each chunk — includes results from prior chunks
                 const currentState = this._buildExtractionState();
 
                 // _extractAll throws AbortError if aborted — breaks the loop naturally
-                const result = await this._extractAll(formattedMessages, currentState, context, scenarioContext);
+                const result = await this._extractAll(formattedTarget, currentState, context, scenarioContext, formattedContext);
 
                 if (result) {
                     for (const category of CATEGORIES) {
@@ -199,73 +223,46 @@ export class ExtractionPipeline {
     }
 
     /**
-     * Build scenario context from SillyTavern's character card, system prompt, and world info.
-     * This gives the extraction LLM knowledge of the RP setting for better entity extraction
-     * and importance scoring.
+     * Build scenario context for extraction.
+     * Only the character's system prompt — just enough for the LLM to understand the setting.
      */
-    async _buildScenarioContext(context) {
-        const MAX_CHARS = 6000; // ~1500 tokens
+    _buildScenarioContext(context) {
         const parts = [];
 
-        // Character card fields
+        // Character card system prompt
         if (context.getCharacterCardFields) {
             try {
                 const fields = context.getCharacterCardFields();
-                if (fields.description) parts.push(`Character Description: ${fields.description}`);
-                if (fields.personality) parts.push(`Personality: ${fields.personality}`);
-                if (fields.scenario) parts.push(`Scenario: ${fields.scenario}`);
-                if (fields.system) parts.push(`System Prompt: ${fields.system}`);
+                if (fields.system) parts.push(fields.system);
             } catch (e) {
                 console.debug('[RP Memory] Could not read character card fields:', e.message);
             }
         }
 
-        // World Info / Lorebook — dry run to get activated entries without side effects
-        if (context.getWorldInfoPrompt && context.chat) {
-            try {
-                const chatStrings = context.chat
-                    .filter(m => !m.is_system && m.mes)
-                    .slice(-20)
-                    .map(m => m.mes)
-                    .reverse();
-                const wi = await context.getWorldInfoPrompt(chatStrings, context.maxContext || 8192, true);
-                if (wi?.worldInfoString) parts.push(`World Lore:\n${wi.worldInfoString}`);
-            } catch (e) {
-                console.debug('[RP Memory] Could not read world info:', e.message);
+        // Global ST system prompt (if different from character card)
+        try {
+            const globalSP = context.powerUserSettings?.sysprompt;
+            if (globalSP?.enabled && globalSP?.content) {
+                const content = globalSP.content.trim();
+                if (content && !parts.includes(content)) parts.push(content);
             }
+        } catch (e) {
+            console.debug('[RP Memory] Could not read global system prompt:', e.message);
         }
 
-        let result = parts.length > 0 ? parts.join('\n\n') : '';
-        if (result.length > MAX_CHARS) {
-            result = result.slice(0, MAX_CHARS) + '…[truncated]';
-        }
-        return result;
+        return parts.join('\n\n');
     }
 
     /**
-     * Build a trimmed memory state for extraction prompts.
-     * Enforces a hard character budget (~1500 tokens) so extraction costs stay flat.
-     *
-     * Priority order:
-     * 1. Main character (always full)
-     * 2. Active goals (full — needed for status tracking)
-     * 3. Characters sorted by importance desc (full, then summary)
-     * 4. Locations sorted by importance desc (full, then summary)
-     * 5. Recent events (most recent first, summary only)
+     * Build extraction state: Tier 1 (pinned) entities ONLY.
+     * Extraction is not conversation — it just needs pinned entities to avoid
+     * conflicts and duplicates. Everything else is unnecessary context bloat.
      */
     _buildExtractionState() {
-        const MAX_CHARS = 6000; // ~1500 tokens
-        const MAX_EVENTS = 10;
-
-        const fullEntity = (entity) => ({
+        const stripEntity = (entity) => ({
             name: entity.name,
             importance: entity.importance,
             fields: entity.fields || {},
-        });
-
-        const summaryEntity = (entity) => ({
-            name: entity.name,
-            importance: entity.importance,
         });
 
         const state = {
@@ -276,56 +273,34 @@ export class ExtractionPipeline {
             events: {},
         };
 
-        const measure = () => JSON.stringify(state).length;
-
-        // 1. Main Character — always include full
+        // Main Character — always Tier 1
         const mc = this.memoryStore.getMainCharacter();
         if (mc) {
-            state.mainCharacter = fullEntity(mc);
+            state.mainCharacter = stripEntity(mc);
         }
 
-        // 2. Active goals (Tier 1+2) — need full fields for status tracking
-        const allGoals = Object.entries(this.memoryStore.getAllEntities('goals'))
-            .filter(([, e]) => e.tier < 3)
-            .sort(([, a], [, b]) => b.importance - a.importance);
-        for (const [id, entity] of allGoals) {
-            state.goals[id] = fullEntity(entity);
-            if (measure() > MAX_CHARS) {
-                state.goals[id] = summaryEntity(entity);
-            }
+        // Tier 1 characters only
+        const allChars = this.memoryStore.getAllEntities('characters');
+        for (const [id, entity] of Object.entries(allChars)) {
+            if (entity.tier === 1) state.characters[id] = stripEntity(entity);
         }
 
-        // 3. Characters (Tier 1+2) — full if budget allows, then summary
-        const allChars = Object.entries(this.memoryStore.getAllEntities('characters'))
-            .filter(([, e]) => e.tier < 3)
-            .sort(([, a], [, b]) => b.importance - a.importance);
-        for (const [id, entity] of allChars) {
-            if (measure() > MAX_CHARS) {
-                state.characters[id] = summaryEntity(entity);
-            } else {
-                state.characters[id] = fullEntity(entity);
-            }
+        // Tier 1 locations only
+        const allLocs = this.memoryStore.getAllEntities('locations');
+        for (const [id, entity] of Object.entries(allLocs)) {
+            if (entity.tier === 1) state.locations[id] = stripEntity(entity);
         }
 
-        // 4. Locations (Tier 1+2) — full if budget allows, then summary
-        const allLocs = Object.entries(this.memoryStore.getAllEntities('locations'))
-            .filter(([, e]) => e.tier < 3)
-            .sort(([, a], [, b]) => b.importance - a.importance);
-        for (const [id, entity] of allLocs) {
-            if (measure() > MAX_CHARS) {
-                state.locations[id] = summaryEntity(entity);
-            } else {
-                state.locations[id] = fullEntity(entity);
-            }
+        // Tier 1 goals only
+        const allGoals = this.memoryStore.getAllEntities('goals');
+        for (const [id, entity] of Object.entries(allGoals)) {
+            if (entity.tier === 1) state.goals[id] = stripEntity(entity);
         }
 
-        // 5. Events — most recent N, summary only (just name + turn)
-        const allEvents = Object.entries(this.memoryStore.getAllEntities('events'))
-            .filter(([, e]) => e.tier < 3)
-            .sort(([, a], [, b]) => (b.fields.turn || b.createdTurn || 0) - (a.fields.turn || a.createdTurn || 0))
-            .slice(0, MAX_EVENTS);
-        for (const [id, entity] of allEvents) {
-            state.events[id] = summaryEntity(entity);
+        // Tier 1 events only
+        const allEvents = this.memoryStore.getAllEntities('events');
+        for (const [id, entity] of Object.entries(allEvents)) {
+            if (entity.tier === 1) state.events[id] = stripEntity(entity);
         }
 
         return state;
@@ -365,7 +340,7 @@ export class ExtractionPipeline {
     /**
      * Run unified extraction for all categories in a single API call.
      */
-    async _extractAll(formattedMessages, currentState, context, scenarioContext = '') {
+    async _extractAll(formattedMessages, currentState, context, scenarioContext = '', precedingContext = '') {
         const lang = this.getLang();
         const systemPrompt = lang === 'zh' ? ExtractionPrompts.UNIFIED_SYSTEM_ZH : ExtractionPrompts.UNIFIED_SYSTEM;
         const userPrompt = ExtractionPrompts.getUnifiedUserPrompt(
@@ -375,6 +350,7 @@ export class ExtractionPipeline {
             context.name2,
             lang,
             scenarioContext,
+            precedingContext,
         );
 
         try {
