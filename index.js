@@ -4,12 +4,14 @@ import { extension_settings, getContext, renderExtensionTemplateAsync,
     saveMetadataDebounced } from '../../../extensions.js';
 import { Popup, POPUP_RESULT } from '../../../popup.js';
 import { SECRET_KEYS, secret_state, findSecret } from '../../../secrets.js';
+import { t, getCurrentLocale, addLocaleData } from '../../../i18n.js';
 import { MemoryStore } from './src/MemoryStore.js';
 import { PromptInjector } from './src/PromptInjector.js';
 import { ExtractionPipeline } from './src/ExtractionPipeline.js';
 import { DecayEngine } from './src/DecayEngine.js';
 import { OpenRouterClient } from './src/OpenRouterClient.js';
 import { EmbeddingService } from './src/EmbeddingService.js';
+import { LanguageDetector } from './src/LanguageDetector.js';
 import { createEmptyEntity, generateId } from './src/Utils.js';
 
 const MODULE_NAME = 'rp_memory';
@@ -34,6 +36,7 @@ const defaultSettings = {
     debugMode: true,
     embeddingsEnabled: false,
     embeddingModel: 'openai/text-embedding-3-small',
+    promptLanguage: 'auto',
 };
 
 // Singletons
@@ -150,6 +153,7 @@ function syncUIFromSettings() {
     $('#rp_memory_embeddings_enabled').prop('checked', s.embeddingsEnabled);
     $('#rp_memory_embedding_model_container').toggle(s.embeddingsEnabled);
     $('#rp_memory_embedding_model').val(s.embeddingModel);
+    $('#rp_memory_prompt_language').val(s.promptLanguage);
 }
 
 function bindSettingsListeners() {
@@ -237,6 +241,13 @@ function bindSettingsListeners() {
 
     // Refresh embedding models button
     $('#rp_memory_refresh_embedding_models').on('click', () => loadEmbeddingModelList(true));
+
+    // Prompt language
+    $('#rp_memory_prompt_language').on('change', function () {
+        getSettings().promptLanguage = $(this).val();
+        saveSettingsDebounced();
+        injectMemoryPrompt();
+    });
 
     // Manual extraction depth
     $('#rp_memory_extract_depth').on('input', function () {
@@ -454,6 +465,19 @@ function getRecentMessageTexts(context, count) {
         .filter(Boolean);
 
     return messages;
+}
+
+// ===================== Prompt Language =====================
+
+/**
+ * Resolve the current prompt language (en/zh).
+ * Uses LanguageDetector with the user's setting + auto-detection from recent messages.
+ */
+function getPromptLanguage() {
+    const s = getSettings();
+    const context = getContext();
+    const recentTexts = getRecentMessageTexts(context, 10);
+    return LanguageDetector.resolve(s.promptLanguage, recentTexts);
 }
 
 // ===================== Render UI =====================
@@ -1011,7 +1035,7 @@ async function onNewMessage() {
     // Kick off async extraction — does NOT block chat
     triggerExtraction(context).catch(err => {
         console.error('[RP Memory] Extraction failed:', err);
-        toastr.error('Memory extraction failed. Check console for details.');
+        toastr.error(t`Memory extraction failed. Check console for details.`);
     });
 }
 
@@ -1045,7 +1069,7 @@ async function triggerExtraction(context) {
         renderMemoryUI();
 
         debugLog('Extraction complete');
-        toastr.success('Memory updated', 'RP Memory', { timeOut: 2000 });
+        toastr.success(t`Memory updated`, 'RP Memory', { timeOut: 2000 });
     } finally {
         memoryStore.setExtractionInProgress(false);
         showExtractionIndicator(false);
@@ -1055,20 +1079,20 @@ async function triggerExtraction(context) {
 async function testConnection() {
     const apiKey = await resolveApiKey();
     if (!apiKey) {
-        toastr.warning('Please configure an OpenRouter API key');
+        toastr.warning(t`Please configure an OpenRouter API key`);
         return;
     }
 
-    toastr.info('Testing connection...');
+    toastr.info(t`Testing connection...`);
     try {
         const ok = await apiClient.testConnection();
         if (ok) {
-            toastr.success('Connection successful!');
+            toastr.success(t`Connection successful!`);
         } else {
-            toastr.error('Connection test returned unexpected response');
+            toastr.error(t`Connection test returned unexpected response`);
         }
     } catch (err) {
-        toastr.error(`Connection failed: ${err.message}`);
+        toastr.error(t`Connection failed: ${err.message}`);
         console.error('[RP Memory] Connection test failed:', err);
     }
 }
@@ -1076,18 +1100,18 @@ async function testConnection() {
 async function forceExtract() {
     const s = getSettings();
     if (!s.enabled) {
-        toastr.warning('RP Memory is disabled');
+        toastr.warning(t`RP Memory is disabled`);
         return;
     }
     const apiKey = await resolveApiKey();
     if (!apiKey) {
-        toastr.warning('Please configure an OpenRouter API key in Settings');
+        toastr.warning(t`Please configure an OpenRouter API key in Settings`);
         return;
     }
 
     const context = getContext();
     if (!context.chat?.length) {
-        toastr.warning('No chat messages to extract from');
+        toastr.warning(t`No chat messages to extract from`);
         return;
     }
 
@@ -1125,7 +1149,7 @@ async function forceExtract() {
         injectMemoryPrompt();
         renderMemoryUI();
 
-        const label = depth > 0 ? `Last ${depth} exchanges extracted` : 'Full history extracted';
+        const label = depth > 0 ? t`Last ${depth} exchanges extracted` : t`Full history extracted`;
         debugLog('Manual extraction complete');
         toastr.success(label, 'RP Memory', { timeOut: 3000 });
     } finally {
@@ -1190,7 +1214,7 @@ async function loadModelList(forceRefresh = false) {
     } catch (err) {
         console.error('[RP Memory] Failed to fetch models:', err);
         $search.attr('placeholder', 'Failed to load models');
-        toastr.warning('Could not load model list from OpenRouter');
+        toastr.warning(t`Could not load model list from OpenRouter`);
     }
 }
 
@@ -1312,7 +1336,7 @@ async function loadEmbeddingModelList(forceRefresh = false) {
     } catch (err) {
         console.error('[RP Memory] Failed to fetch embedding models:', err);
         $select.html(`<option value="${escapeHtml(currentVal)}">${escapeHtml(currentVal)}</option>`);
-        toastr.warning('Could not load embedding model list from OpenRouter');
+        toastr.warning(t`Could not load embedding model list from OpenRouter`);
     }
 }
 
@@ -1440,7 +1464,7 @@ function bindFloatingNavListeners() {
         e.stopPropagation();
         if (memoryStore.isExtractionInProgress()) {
             pipeline.abort();
-            toastr.info('Extraction stopped', 'RP Memory', { timeOut: 2000 });
+            toastr.info(t`Extraction stopped`, 'RP Memory', { timeOut: 2000 });
         } else {
             forceExtract();
         }
@@ -1841,6 +1865,22 @@ jQuery(async function () {
 
         initSettings();
 
+        // Register locale data for current locale (before HTML append so data-i18n works)
+        const currentLocale = getCurrentLocale();
+        if (currentLocale && currentLocale !== 'en') {
+            try {
+                const localeUrl = new URL(`./locales/${currentLocale}.json`, import.meta.url);
+                const resp = await fetch(localeUrl);
+                if (resp.ok) {
+                    const localeData = await resp.json();
+                    addLocaleData(currentLocale, localeData);
+                    console.log(`[RP Memory] Loaded locale: ${currentLocale}`);
+                }
+            } catch (err) {
+                console.debug(`[RP Memory] No locale file for ${currentLocale}`);
+            }
+        }
+
         console.log('[RP Memory] Loading template...');
         const html = await renderExtensionTemplateAsync('third-party/rp-memory', 'settings');
         $('#extensions_settings2').append(html);
@@ -1848,11 +1888,11 @@ jQuery(async function () {
 
         // Construct singletons
         memoryStore = new MemoryStore();
-        injector = new PromptInjector(() => getSettings());
+        injector = new PromptInjector(() => getSettings(), getPromptLanguage);
         apiClient = new OpenRouterClient(() => getSettings());
         apiClient.setKeyResolver(resolveApiKey);
         decayEngine = new DecayEngine(() => getSettings());
-        pipeline = new ExtractionPipeline(apiClient, memoryStore, () => getSettings(), decayEngine);
+        pipeline = new ExtractionPipeline(apiClient, memoryStore, () => getSettings(), decayEngine, getPromptLanguage);
         embeddingService = new EmbeddingService(apiClient, () => getSettings());
 
         // Sync UI

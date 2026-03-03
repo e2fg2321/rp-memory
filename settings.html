@@ -2,9 +2,9 @@
     <div class="inline-drawer">
         <div class="inline-drawer-toggle inline-drawer-header">
             <div class="flex-container alignitemscenter margin0">
-                <b>RP Memory</b>
+                <b data-i18n="RP Memory">RP Memory</b>
                 <span id="rp_memory_status" class="rp-mem-status-badge" style="display:none;">
-                    <i class="fa-solid fa-spinner fa-spin"></i> Extracting...
+                    <i class="fa-solid fa-spinner fa-spin"></i> <span data-i18n="Extracting...">Extracting...</span>
                 </span>
             </div>
             <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
@@ -14,19 +14,19 @@
             <!-- Enable toggle -->
             <label class="checkbox_label">
                 <input id="rp_memory_enabled" type="checkbox" />
-                <span>Enable RP Memory</span>
+                <span data-i18n="Enable RP Memory">Enable RP Memory</span>
             </label>
 
             <!-- Tab navigation -->
             <div class="rp-mem-tabs">
                 <div class="menu_button rp-mem-tab active" data-tab="memory">
-                    <i class="fa-solid fa-brain"></i> Memory
+                    <i class="fa-solid fa-brain"></i> <span data-i18n="Memory">Memory</span>
                 </div>
                 <div class="menu_button rp-mem-tab" data-tab="settings">
-                    <i class="fa-solid fa-gear"></i> Settings
+                    <i class="fa-solid fa-gear"></i> <span data-i18n="Settings">Settings</span>
                 </div>
                 <div class="menu_button rp-mem-tab" data-tab="conflicts">
-                    <i class="fa-solid fa-triangle-exclamation"></i> Conflicts
+                    <i class="fa-solid fa-triangle-exclamation"></i> <span data-i18n="Conflicts">Conflicts</span>
                     <span id="rp_memory_conflict_count" class="rp-mem-badge" style="display:none;">0</span>
                 </div>
             </div>
@@ -38,9 +38,9 @@
                 <div class="rp-mem-category" data-category="mainCharacter">
                     <div class="rp-mem-category-header" data-category="mainCharacter">
                         <i class="fa-solid fa-user"></i>
-                        <span>Main Character</span>
+                        <span data-i18n="Main Character">Main Character</span>
                         <span class="rp-mem-category-count" data-category="mainCharacter">0</span>
-                        <div class="menu_button menu_button_icon rp-mem-add-btn" data-category="mainCharacter" title="Set up main character">
+                        <div class="menu_button menu_button_icon rp-mem-add-btn" data-category="mainCharacter" title="Set up main character" data-i18n="[title]Set up main character">
                             <i class="fa-solid fa-plus"></i>
                         </div>
                     </div>
@@ -51,9 +51,9 @@
                 <div class="rp-mem-category" data-category="characters">
                     <div class="rp-mem-category-header" data-category="characters">
                         <i class="fa-solid fa-users"></i>
-                        <span>Characters (NPCs)</span>
+                        <span data-i18n="Characters (NPCs)">Characters (NPCs)</span>
                         <span class="rp-mem-category-count" data-category="characters">0</span>
-                        <div class="menu_button menu_button_icon rp-mem-add-btn" data-category="characters" title="Add character">
+                        <div class="menu_button menu_button_icon rp-mem-add-btn" data-category="characters" title="Add character" data-i18n="[title]Add character">
                             <i class="fa-solid fa-plus"></i>
                         </div>
                     </div>
@@ -64,9 +64,9 @@
                 <div class="rp-mem-category" data-category="locations">
                     <div class="rp-mem-category-header" data-category="locations">
                         <i class="fa-solid fa-map-location-dot"></i>
-                        <span>Locations</span>
+                        <span data-i18n="Locations">Locations</span>
                         <span class="rp-mem-category-count" data-category="locations">0</span>
-                        <div class="menu_button menu_button_icon rp-mem-add-btn" data-category="locations" title="Add location">
+                        <div class="menu_button menu_button_icon rp-mem-add-btn" data-category="locations" title="Add location" data-i18n="[title]Add location">
                             <i class="fa-solid fa-plus"></i>
                         </div>
                     </div>
@@ -77,9 +77,9 @@
                 <div class="rp-mem-category" data-category="goals">
                     <div class="rp-mem-category-header" data-category="goals">
                         <i class="fa-solid fa-bullseye"></i>
-                        <span>Active Goals / Tasks</span>
+                        <span data-i18n="Active Goals / Tasks">Active Goals / Tasks</span>
                         <span class="rp-mem-category-count" data-category="goals">0</span>
-                        <div class="menu_button menu_button_icon rp-mem-add-btn" data-category="goals" title="Add goal">
+                        <div class="menu_button menu_button_icon rp-mem-add-btn" data-category="goals" title="Add goal" data-i18n="[title]Add goal">
                             <i class="fa-solid fa-plus"></i>
                         </div>
                     </div>
@@ -90,9 +90,9 @@
                 <div class="rp-mem-category" data-category="events">
                     <div class="rp-mem-category-header" data-category="events">
                         <i class="fa-solid fa-timeline"></i>
-                        <span>Major Events</span>
+                        <span data-i18n="Major Events">Major Events</span>
                         <span class="rp-mem-category-count" data-category="events">0</span>
-                        <div class="menu_button menu_button_icon rp-mem-add-btn" data-category="events" title="Add event">
+                        <div class="menu_button menu_button_icon rp-mem-add-btn" data-category="events" title="Add event" data-i18n="[title]Add event">
                             <i class="fa-solid fa-plus"></i>
                         </div>
                     </div>
@@ -101,22 +101,22 @@
 
                 <!-- Actions -->
                 <div class="rp-mem-actions">
-                    <div id="rp_memory_open_panel" class="menu_button menu_button_icon" title="Open floating memory panel">
+                    <div id="rp_memory_open_panel" class="menu_button menu_button_icon" title="Open floating memory panel" data-i18n="[title]Open floating memory panel">
                         <i class="fa-solid fa-up-right-from-square"></i>
-                        <span>Panel</span>
+                        <span data-i18n="Panel">Panel</span>
                     </div>
                     <div id="rp_memory_force_extract" class="menu_button menu_button_icon">
                         <i class="fa-solid fa-wand-magic-sparkles"></i>
-                        <span>Extract Now</span>
+                        <span data-i18n="Extract Now">Extract Now</span>
                     </div>
-                    <div class="rp-mem-extract-depth" title="How many exchanges to extract (0 = full history)">
-                        <label>Depth:</label>
+                    <div class="rp-mem-extract-depth" title="How many exchanges to extract (0 = full history)" data-i18n="[title]How many exchanges to extract (0 = full history)">
+                        <label data-i18n="Depth:">Depth:</label>
                         <input id="rp_memory_extract_depth" class="text_pole" type="number" min="0" max="9999" value="0" style="width:60px;" />
-                        <span class="rp-mem-extract-depth-hint">0 = all</span>
+                        <span class="rp-mem-extract-depth-hint" data-i18n="0 = all">0 = all</span>
                     </div>
                     <div id="rp_memory_clear_all" class="menu_button menu_button_icon">
                         <i class="fa-solid fa-trash"></i>
-                        <span>Clear All</span>
+                        <span data-i18n="Clear All">Clear All</span>
                     </div>
                     <span id="rp_memory_token_count" class="rp-mem-token-count"></span>
                 </div>
@@ -127,78 +127,78 @@
 
                 <label class="checkbox_label">
                     <input id="rp_memory_use_st_key" type="checkbox" />
-                    <span>Use SillyTavern's OpenRouter key</span>
+                    <span data-i18n="Use SillyTavern's OpenRouter key">Use SillyTavern's OpenRouter key</span>
                 </label>
                 <div id="rp_memory_st_key_status" class="rp-mem-key-status" style="display:none;"></div>
 
                 <div id="rp_memory_api_key_container">
-                    <label>OpenRouter API Key</label>
+                    <label data-i18n="OpenRouter API Key">OpenRouter API Key</label>
                     <input id="rp_memory_api_key" type="password" class="text_pole" placeholder="sk-or-..." />
                 </div>
 
-                <label>Extraction Model</label>
+                <label data-i18n="Extraction Model">Extraction Model</label>
                 <div class="rp-mem-model-row">
                     <div class="rp-mem-model-search-wrapper">
-                        <input id="rp_memory_model_search" type="text" class="text_pole" placeholder="Search models..." autocomplete="off" />
+                        <input id="rp_memory_model_search" type="text" class="text_pole" placeholder="Search models..." data-i18n="[placeholder]Search models..." autocomplete="off" />
                         <input id="rp_memory_model" type="hidden" />
                         <div id="rp_memory_model_list" class="rp-mem-model-list"></div>
                     </div>
-                    <div id="rp_memory_refresh_models" class="menu_button menu_button_icon" title="Refresh model list">
+                    <div id="rp_memory_refresh_models" class="menu_button menu_button_icon" title="Refresh model list" data-i18n="[title]Refresh model list">
                         <i class="fa-solid fa-arrows-rotate"></i>
                     </div>
                 </div>
 
                 <div id="rp_memory_test_connection" class="menu_button menu_button_icon">
                     <i class="fa-solid fa-plug"></i>
-                    <span>Test Connection</span>
+                    <span data-i18n="Test Connection">Test Connection</span>
                 </div>
 
                 <hr />
 
                 <div class="flex-container justifyspacebetween alignitemscenter">
-                    <label>Extract every <b><span id="rp_memory_interval_val">2</span></b> exchanges</label>
+                    <label data-i18n="Extract every N exchanges">Extract every <b><span id="rp_memory_interval_val">2</span></b> exchanges</label>
                 </div>
                 <input id="rp_memory_interval" type="range" min="1" max="10" step="1" value="2" />
 
                 <div class="flex-container justifyspacebetween alignitemscenter">
-                    <label>Exchanges per extraction: <b><span id="rp_memory_msg_count_val">5</span></b></label>
+                    <label data-i18n="Exchanges per extraction:">Exchanges per extraction: <b><span id="rp_memory_msg_count_val">5</span></b></label>
                 </div>
                 <input id="rp_memory_msg_count" type="range" min="2" max="15" step="1" value="5" />
 
                 <div class="flex-container justifyspacebetween alignitemscenter">
-                    <label>Decay factor: <b><span id="rp_memory_decay_val">0.95</span></b></label>
+                    <label data-i18n="Decay factor:">Decay factor: <b><span id="rp_memory_decay_val">0.95</span></b></label>
                 </div>
                 <input id="rp_memory_decay" type="range" min="0.80" max="0.99" step="0.01" value="0.95" />
 
                 <div class="flex-container justifyspacebetween alignitemscenter">
-                    <label>Demotion threshold: <b><span id="rp_memory_demote_val">5.0</span></b></label>
+                    <label data-i18n="Demotion threshold:">Demotion threshold: <b><span id="rp_memory_demote_val">5.0</span></b></label>
                 </div>
                 <input id="rp_memory_demote" type="range" min="1" max="8" step="0.5" value="5.0" />
 
                 <div class="flex-container justifyspacebetween alignitemscenter">
-                    <label>Token budget (0 = uncapped): <b><span id="rp_memory_budget_val">0</span></b></label>
+                    <label data-i18n="Token budget (0 = uncapped):">Token budget (0 = uncapped): <b><span id="rp_memory_budget_val">0</span></b></label>
                 </div>
                 <input id="rp_memory_budget" type="range" min="0" max="8000" step="100" value="0" />
 
                 <hr />
 
-                <label>Injection Position</label>
+                <label data-i18n="Injection Position">Injection Position</label>
                 <div class="rp-mem-radio-group">
                     <label class="checkbox_label">
                         <input type="radio" name="rp_memory_position" value="2" />
-                        <span>Before Main Prompt</span>
+                        <span data-i18n="Before Main Prompt">Before Main Prompt</span>
                     </label>
                     <label class="checkbox_label">
                         <input type="radio" name="rp_memory_position" value="0" checked />
-                        <span>After Main Prompt</span>
+                        <span data-i18n="After Main Prompt">After Main Prompt</span>
                     </label>
                     <label class="checkbox_label">
                         <input type="radio" name="rp_memory_position" value="1" />
-                        <span>In-chat @ Depth</span>
+                        <span data-i18n="In-chat @ Depth">In-chat @ Depth</span>
                     </label>
                 </div>
                 <div class="flex-container alignitemscenter" id="rp_memory_depth_container" style="display:none;">
-                    <label>Depth:</label>
+                    <label data-i18n="Depth:">Depth:</label>
                     <input id="rp_memory_depth" class="text_pole" type="number" min="0" max="9999" value="2" style="width:80px;" />
                 </div>
 
@@ -206,19 +206,19 @@
 
                 <label class="checkbox_label">
                     <input id="rp_memory_embeddings_enabled" type="checkbox" />
-                    <span>Smart Retrieval (Embeddings)</span>
+                    <span data-i18n="Smart Retrieval (Embeddings)">Smart Retrieval (Embeddings)</span>
                 </label>
-                <div class="rp-mem-embeddings-hint">
+                <div class="rp-mem-embeddings-hint" data-i18n="When enabled, only injects entities relevant to the current scene instead of all active entities.">
                     When enabled, only injects entities relevant to the current scene instead of all active entities.
                 </div>
 
                 <div id="rp_memory_embedding_model_container" style="display:none;">
-                    <label>Embedding Model</label>
+                    <label data-i18n="Embedding Model">Embedding Model</label>
                     <div class="rp-mem-model-row">
                         <select id="rp_memory_embedding_model" class="text_pole">
                             <option value="openai/text-embedding-3-small">openai/text-embedding-3-small</option>
                         </select>
-                        <div id="rp_memory_refresh_embedding_models" class="menu_button menu_button_icon" title="Refresh embedding model list">
+                        <div id="rp_memory_refresh_embedding_models" class="menu_button menu_button_icon" title="Refresh embedding model list" data-i18n="[title]Refresh embedding model list">
                             <i class="fa-solid fa-arrows-rotate"></i>
                         </div>
                     </div>
@@ -226,16 +226,28 @@
 
                 <hr />
 
+                <label data-i18n="Prompt Language">Prompt Language</label>
+                <select id="rp_memory_prompt_language" class="text_pole">
+                    <option value="auto" data-i18n="Auto-detect (match chat)">Auto-detect (match chat)</option>
+                    <option value="en">English</option>
+                    <option value="zh">中文</option>
+                </select>
+                <div class="rp-mem-embeddings-hint" data-i18n="Controls the language of extraction prompts and injected memory text. Auto-detect analyzes chat messages for CJK characters.">
+                    Controls the language of extraction prompts and injected memory text. Auto-detect analyzes chat messages for CJK characters.
+                </div>
+
+                <hr />
+
                 <label class="checkbox_label">
                     <input id="rp_memory_debug" type="checkbox" />
-                    <span>Debug mode (console logging)</span>
+                    <span data-i18n="Debug mode (console logging)">Debug mode (console logging)</span>
                 </label>
             </div>
 
             <!-- ============ TAB: Conflicts ============ -->
             <div id="rp_memory_tab_conflicts" class="rp-mem-tab-content" style="display:none;">
                 <div id="rp_memory_conflict_list">
-                    <div class="rp-mem-empty-state">No conflicts detected</div>
+                    <div class="rp-mem-empty-state" data-i18n="No conflicts detected">No conflicts detected</div>
                 </div>
             </div>
 

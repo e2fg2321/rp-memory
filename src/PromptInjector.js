@@ -1,8 +1,71 @@
 import { estimateTokens } from './Utils.js';
 
+const LABELS = {
+    en: {
+        worldStateOpen: '[RP Memory - World State]',
+        worldStateClose: '[/RP Memory]',
+        mainCharacter: 'Main Character',
+        knownCharacters: 'Known Characters',
+        knownLocations: 'Known Locations',
+        activeGoals: 'Active Goals',
+        majorEvents: 'Major Events',
+        pinned: 'PINNED',
+        noDescription: 'No description',
+        noDetails: 'No details',
+        description: 'Description',
+        health: 'Health',
+        conditions: 'Conditions',
+        buffs: 'Buffs',
+        skills: 'Skills',
+        inventory: 'Inventory',
+        personality: 'Personality',
+        status: 'Status',
+        relationships: 'Relationships',
+        atmosphere: 'Atmosphere',
+        features: 'Features',
+        progress: 'Progress',
+        blockers: 'Blockers',
+        turn: 'Turn',
+        consequences: 'Consequences',
+    },
+    zh: {
+        worldStateOpen: '[RP Memory - 世界状态]',
+        worldStateClose: '[/RP Memory]',
+        mainCharacter: '主角',
+        knownCharacters: '已知角色',
+        knownLocations: '已知地点',
+        activeGoals: '活跃目标',
+        majorEvents: '重大事件',
+        pinned: '置顶',
+        noDescription: '暂无描述',
+        noDetails: '暂无详情',
+        description: '描述',
+        health: '生命值',
+        conditions: '状态',
+        buffs: '增益',
+        skills: '技能',
+        inventory: '物品栏',
+        personality: '性格',
+        status: '状态',
+        relationships: '关系',
+        atmosphere: '氛围',
+        features: '特征',
+        progress: '进度',
+        blockers: '阻碍',
+        turn: '回合',
+        consequences: '后果',
+    },
+};
+
 export class PromptInjector {
-    constructor(getSettings) {
+    constructor(getSettings, getLang = null) {
         this.getSettings = getSettings;
+        this.getLang = getLang || (() => 'en');
+    }
+
+    get labels() {
+        const lang = this.getLang();
+        return LABELS[lang] || LABELS.en;
     }
 
     /**
@@ -58,7 +121,8 @@ export class PromptInjector {
 
         if (sections.length === 0) return '';
 
-        return `[RP Memory - World State]\n${sections.join('\n\n')}\n[/RP Memory]`;
+        const l = this.labels;
+        return `${l.worldStateOpen}\n${sections.join('\n\n')}\n${l.worldStateClose}`;
     }
 
     /**
@@ -75,7 +139,8 @@ export class PromptInjector {
         // Group by category for formatting
         const included = { mainCharacter: [], characters: [], locations: [], goals: [], events: [] };
 
-        let currentTokens = estimateTokens('[RP Memory - World State]\n[/RP Memory]');
+        const l = this.labels;
+        let currentTokens = estimateTokens(`${l.worldStateOpen}\n${l.worldStateClose}`);
 
         // Always include pinned entities
         for (const item of pinned) {
@@ -119,7 +184,7 @@ export class PromptInjector {
 
         if (sections.length === 0) return '';
 
-        return `[RP Memory - World State]\n${sections.join('\n\n')}\n[/RP Memory]`;
+        return `${l.worldStateOpen}\n${sections.join('\n\n')}\n${l.worldStateClose}`;
     }
 
     /**
@@ -173,80 +238,85 @@ export class PromptInjector {
 
     _formatMainCharacter(mc) {
         const f = mc.fields;
-        const lines = [`## Main Character: ${mc.name}`];
+        const l = this.labels;
+        const lines = [`## ${l.mainCharacter}: ${mc.name}`];
 
-        if (f.description) lines.push(`Description: ${f.description}`);
+        if (f.description) lines.push(`${l.description}: ${f.description}`);
 
         // Flat fields (new format)
         const health = this._str(f.health) || this._str(f.status?.health);
         const conditions = this._str(f.conditions) || this._str(f.status?.conditions);
         const buffs = this._str(f.buffs) || this._str(f.status?.buffs);
 
-        if (health) lines.push(`Health: ${health}`);
-        if (conditions) lines.push(`Conditions: ${conditions}`);
-        if (buffs) lines.push(`Buffs: ${buffs}`);
+        if (health) lines.push(`${l.health}: ${health}`);
+        if (conditions) lines.push(`${l.conditions}: ${conditions}`);
+        if (buffs) lines.push(`${l.buffs}: ${buffs}`);
 
         const skills = this._str(f.skills);
         const inventory = this._str(f.inventory);
-        if (skills) lines.push(`Skills: ${skills}`);
-        if (inventory) lines.push(`Inventory: ${inventory}`);
+        if (skills) lines.push(`${l.skills}: ${skills}`);
+        if (inventory) lines.push(`${l.inventory}: ${inventory}`);
 
         return lines.join('\n');
     }
 
     _formatCharacters(characters) {
-        const lines = ['## Known Characters'];
+        const l = this.labels;
+        const lines = [`## ${l.knownCharacters}`];
         characters.sort((a, b) => (a.tier - b.tier) || (b.importance - a.importance));
 
         for (const c of characters) {
-            const tierMarker = c.tier === 1 ? ' [PINNED]' : '';
-            lines.push(`- ${c.name}${tierMarker}: ${c.fields.description || 'No description'}`);
-            if (c.fields.personality) lines.push(`  Personality: ${c.fields.personality}`);
-            if (c.fields.status) lines.push(`  Status: ${this._str(c.fields.status)}`);
+            const tierMarker = c.tier === 1 ? ` [${l.pinned}]` : '';
+            lines.push(`- ${c.name}${tierMarker}: ${c.fields.description || l.noDescription}`);
+            if (c.fields.personality) lines.push(`  ${l.personality}: ${c.fields.personality}`);
+            if (c.fields.status) lines.push(`  ${l.status}: ${this._str(c.fields.status)}`);
             const rels = this._str(c.fields.relationships);
-            if (rels) lines.push(`  Relationships: ${rels}`);
+            if (rels) lines.push(`  ${l.relationships}: ${rels}`);
         }
 
         return lines.join('\n');
     }
 
     _formatLocations(locations) {
-        const lines = ['## Known Locations'];
+        const l = this.labels;
+        const lines = [`## ${l.knownLocations}`];
         locations.sort((a, b) => (a.tier - b.tier) || (b.importance - a.importance));
 
         for (const loc of locations) {
-            const tierMarker = loc.tier === 1 ? ' [PINNED]' : '';
-            lines.push(`- ${loc.name}${tierMarker}: ${loc.fields.description || 'No description'}`);
-            if (loc.fields.atmosphere) lines.push(`  Atmosphere: ${loc.fields.atmosphere}`);
+            const tierMarker = loc.tier === 1 ? ` [${l.pinned}]` : '';
+            lines.push(`- ${loc.name}${tierMarker}: ${loc.fields.description || l.noDescription}`);
+            if (loc.fields.atmosphere) lines.push(`  ${l.atmosphere}: ${loc.fields.atmosphere}`);
             const features = this._str(loc.fields.notableFeatures);
-            if (features) lines.push(`  Features: ${features}`);
+            if (features) lines.push(`  ${l.features}: ${features}`);
         }
 
         return lines.join('\n');
     }
 
     _formatGoals(goals) {
-        const lines = ['## Active Goals'];
+        const l = this.labels;
+        const lines = [`## ${l.activeGoals}`];
         goals.sort((a, b) => (b.importance - a.importance));
 
         for (const g of goals) {
             const status = g.fields.status || 'in_progress';
-            lines.push(`- ${g.name} [${status}]: ${g.fields.description || 'No description'}`);
-            if (g.fields.progress) lines.push(`  Progress: ${g.fields.progress}`);
-            if (g.fields.blockers) lines.push(`  Blockers: ${g.fields.blockers}`);
+            lines.push(`- ${g.name} [${status}]: ${g.fields.description || l.noDescription}`);
+            if (g.fields.progress) lines.push(`  ${l.progress}: ${g.fields.progress}`);
+            if (g.fields.blockers) lines.push(`  ${l.blockers}: ${g.fields.blockers}`);
         }
 
         return lines.join('\n');
     }
 
     _formatEvents(events) {
-        const lines = ['## Major Events'];
+        const l = this.labels;
+        const lines = [`## ${l.majorEvents}`];
         events.sort((a, b) => (b.fields.turn || b.createdTurn) - (a.fields.turn || a.createdTurn));
 
         for (const e of events) {
             const turn = e.fields.turn || e.createdTurn;
-            lines.push(`- Turn ${turn}: ${e.name} — ${e.fields.description || 'No description'}`);
-            if (e.fields.consequences) lines.push(`  Consequences: ${e.fields.consequences}`);
+            lines.push(`- ${l.turn} ${turn}: ${e.name} — ${e.fields.description || l.noDescription}`);
+            if (e.fields.consequences) lines.push(`  ${l.consequences}: ${e.fields.consequences}`);
         }
 
         return lines.join('\n');

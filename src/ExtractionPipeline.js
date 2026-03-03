@@ -4,11 +4,12 @@ import { generateId } from './Utils.js';
 const CATEGORIES = ['characters', 'locations', 'mainCharacter', 'goals', 'events'];
 
 export class ExtractionPipeline {
-    constructor(apiClient, memoryStore, getSettings, decayEngine = null) {
+    constructor(apiClient, memoryStore, getSettings, decayEngine = null, getLang = null) {
         this.apiClient = apiClient;
         this.memoryStore = memoryStore;
         this.getSettings = getSettings;
         this.decayEngine = decayEngine;
+        this.getLang = getLang || (() => 'en');
         this._abortController = null;
     }
 
@@ -228,12 +229,14 @@ export class ExtractionPipeline {
      * Run unified extraction for all categories in a single API call.
      */
     async _extractAll(formattedMessages, currentState, context) {
-        const systemPrompt = ExtractionPrompts.UNIFIED_SYSTEM;
+        const lang = this.getLang();
+        const systemPrompt = lang === 'zh' ? ExtractionPrompts.UNIFIED_SYSTEM_ZH : ExtractionPrompts.UNIFIED_SYSTEM;
         const userPrompt = ExtractionPrompts.getUnifiedUserPrompt(
             formattedMessages,
             currentState,
             context.name1,
             context.name2,
+            lang,
         );
 
         try {

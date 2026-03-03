@@ -16,6 +16,14 @@ const COMMON_RULES = `RULES:
 - Assign importance 1-10 based on narrative significance.
 - Generate kebab-case IDs from names (e.g., "Kira Nightshade" -> "kira-nightshade").`;
 
+const COMMON_RULES_ZH = `规则：
+- 仅输出有效的 JSON。不要解释，不要在 JSON 之外输出任何文字。
+- 仅输出自上次提取以来的变更或新条目。不要重复未变更的信息。
+- 如果该类别没有变化，输出：{"entities": []}
+- 标记为 [HIGH PRIORITY - User action/decision] 的消息反映用户的意图和选择。对这些消息赋予更高的权重。
+- 根据叙事重要性分配 1-10 的重要度分数。
+- 从名称生成 kebab-case ID（例如 "暗夜骑士" -> "an-ye-qi-shi"，"Kira Nightshade" -> "kira-nightshade"）。`;
+
 export class ExtractionPrompts {
     // ==================== Characters (NPCs) ====================
 
@@ -339,7 +347,75 @@ Importance: 9-10 plot-changing/major revelation | 6-8 significant combat/discove
 
 Operations: Insert only — events are historical records. Never update or delete past events.`;
 
-    static getUnifiedUserPrompt(messages, currentState, userName, charName) {
+    // ==================== Unified (Chinese) ====================
+
+    static UNIFIED_SYSTEM_ZH = `你是一个用于角色扮演的叙事记忆提取系统。你的任务是在一次处理中从对话中提取并追踪5个类别的信息。
+
+${COMMON_RULES_ZH}
+
+输出格式 — 一个扁平的 JSON 对象，包含5个类别键，每个键对应一个实体数组。没有变更的类别使用空数组 []。
+
+重要：每个实体必须将数据嵌套在 "fields" 对象中。不要将字段值放在实体顶层。
+
+示例：
+{
+  "characters": [
+    { "id": "kira-nightshade", "name": "Kira Nightshade", "importance": 7, "fields": { "description": "银发高挑的精灵", "personality": "冷漠但有保护欲", "status": "alive", "present": "yes" } }
+  ],
+  "locations": [],
+  "mainCharacter": [
+    { "id": "main-character", "name": "Aiden", "importance": 10, "fields": { "currentLocation": "月影酒馆", "health": "轻伤" } }
+  ],
+  "goals": [],
+  "events": []
+}
+
+=== 类别 1：characters（NPC 角色）===
+追踪对话中提到的非玩家角色（NPC）。不要将用户的角色包含在此类别中。
+
+字段：description（外貌/特征）、personality（性格）、status（alive/dead/injured/missing + 详情）、relationships（字符串，例如 "Kira：暧昧关系，Marcus：不稳定的联盟"）、present（"yes" 或 "no" — 该角色现在能否与主角直接互动？）
+
+重要度：9-10 核心剧情角色/恋爱对象 | 6-8 有剧情关联的命名NPC | 3-5 次要命名NPC | 1-2 背景角色
+
+操作：角色首次出场时添加。状态变化时更新。永远不要删除 — 改为将 status 标记为 "dead"/"missing"。
+
+=== 类别 2：locations（地点）===
+追踪对话中提到的地点。
+
+字段：description（视觉细节）、atmosphere（氛围/感官描写）、notableFeatures（字符串，例如 "古老的橡树，隐藏的活板门"）、connections（字符串，例如 "通往地下洞窟"）
+
+重要度：9-10 核心枢纽/主要剧情地点 | 6-8 已访问的命名地点 | 3-5 顺带提及的地点 | 1-2 通用无名地点
+
+操作：地点首次被描述时添加。发现新细节或氛围变化时更新。永远不要删除。
+
+=== 类别 3：mainCharacter（主角）===
+追踪用户的主角 — 其状态、技能、物品和当前情况。始终是一个 ID 为 "main-character" 的单一实体。仅包含发生变更的字段 — 省略未变更的字段。
+
+字段：description（外貌，仅在变化时记录）、skills（字符串）、inventory（字符串）、health（字符串）、conditions（字符串）、buffs（字符串）、currentLocation（主角当前所在位置）、currentTime（游戏内时间，例如 "清晨"、"第3天下午"、"2024-03-15 14:00"）
+
+重要度始终为 10。ID 始终为 "main-character"。
+
+操作：仅更新 — 永远不要删除，永远不要添加第二个实体。主角移动时始终更新 currentLocation。时间流逝时始终更新 currentTime。
+
+=== 类别 4：goals（目标）===
+追踪活跃的目标、任务和待办事项。同时检测现有目标是否已完成、失败或放弃。
+
+字段：description（需要完成的事项）、progress（当前进度）、blockers（阻碍进度的因素）、status（"in_progress" | "completed" | "failed" | "abandoned"）
+
+重要度：9-10 主线任务 | 6-8 重要支线任务 | 3-5 次要任务 | 1-2 琐碎目标
+
+操作：新目标出现时添加。随叙事发展更新进度/状态。永远不要删除 — 改为将状态设置为 "completed"/"failed"/"abandoned"。
+
+=== 类别 5：events（事件）===
+记录重要事件（仅重要度 >= 5）。不要重复记录已追踪的事件。将 "turn" 设为 0 — 系统会填入实际回合数。
+
+字段：description（1-2句话）、turn（始终为 0）、involvedEntities（字符串）、consequences（对故事的影响）、significance（叙事重要性）
+
+重要度：9-10 剧情转折/重大揭示 | 6-8 重要战斗/发现 | 3-5 值得注意的互动 | 5以下跳过
+
+操作：仅插入 — 事件是历史记录。永远不要更新或删除过去的事件。`;
+
+    static getUnifiedUserPrompt(messages, currentState, userName, charName, lang = 'en') {
         const sections = [];
 
         // Characters
@@ -371,6 +447,19 @@ Operations: Insert only — events are historical records. Never update or delet
         sections.push(`=== TRACKED EVENTS ===\n${
             Object.keys(events).length > 0 ? JSON.stringify(events, null, 2) : '(none)'
         }`);
+
+        if (lang === 'zh') {
+            return `当前记忆状态：
+${sections.join('\n\n')}
+
+最近的消息：
+${messages}
+
+用户的角色是 "${userName}" — 仅在 mainCharacter 类别中追踪他们（id 为 "main-character"），不要放在 characters 中。
+主要 AI 角色是 "${charName}" — 如果有重要更新，请在 characters 中追踪他们。
+
+提取所有5个类别中的变更。仅输出差异 — 新增或变更的实体。没有变更的类别使用空数组 []。`;
+        }
 
         return `CURRENT MEMORY STATE:
 ${sections.join('\n\n')}
