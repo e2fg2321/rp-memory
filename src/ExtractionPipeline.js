@@ -204,6 +204,7 @@ export class ExtractionPipeline {
      * and importance scoring.
      */
     async _buildScenarioContext(context) {
+        const MAX_CHARS = 6000; // ~1500 tokens
         const parts = [];
 
         // Character card fields
@@ -234,21 +235,37 @@ export class ExtractionPipeline {
             }
         }
 
-        return parts.length > 0 ? parts.join('\n\n') : '';
+        let result = parts.length > 0 ? parts.join('\n\n') : '';
+        if (result.length > MAX_CHARS) {
+            result = result.slice(0, MAX_CHARS) + '…[truncated]';
+        }
+        return result;
     }
 
     /**
      * Build a trimmed memory state for extraction prompts.
-     * Strips internal bookkeeping fields, skips archived (Tier 3) entities,
-     * and caps events to the most recent 15.
+     * Enforces a hard character budget (~1500 tokens) so extraction costs stay flat.
+     *
+     * Priority order:
+     * 1. Main character (always full)
+     * 2. Active goals (full — needed for status tracking)
+     * 3. Characters sorted by importance desc (full, then summary)
+     * 4. Locations sorted by importance desc (full, then summary)
+     * 5. Recent events (most recent first, summary only)
      */
     _buildExtractionState() {
-        const MAX_EVENTS = 15;
+        const MAX_CHARS = 6000; // ~1500 tokens
+        const MAX_EVENTS = 10;
 
-        const stripEntity = (entity) => ({
+        const fullEntity = (entity) => ({
             name: entity.name,
             importance: entity.importance,
             fields: entity.fields || {},
+        });
+
+        const summaryEntity = (entity) => ({
+            name: entity.name,
+            importance: entity.importance,
         });
 
         const state = {
@@ -259,40 +276,56 @@ export class ExtractionPipeline {
             events: {},
         };
 
-        // Characters — skip Tier 3 (archived)
-        const allChars = this.memoryStore.getAllEntities('characters');
-        for (const [id, entity] of Object.entries(allChars)) {
-            if (entity.tier >= 3) continue;
-            state.characters[id] = stripEntity(entity);
-        }
+        const measure = () => JSON.stringify(state).length;
 
-        // Locations — skip Tier 3
-        const allLocs = this.memoryStore.getAllEntities('locations');
-        for (const [id, entity] of Object.entries(allLocs)) {
-            if (entity.tier >= 3) continue;
-            state.locations[id] = stripEntity(entity);
-        }
-
-        // Main Character — always include
+        // 1. Main Character — always include full
         const mc = this.memoryStore.getMainCharacter();
         if (mc) {
-            state.mainCharacter = stripEntity(mc);
+            state.mainCharacter = fullEntity(mc);
         }
 
-        // Goals — skip Tier 3
-        const allGoals = this.memoryStore.getAllEntities('goals');
-        for (const [id, entity] of Object.entries(allGoals)) {
-            if (entity.tier >= 3) continue;
-            state.goals[id] = stripEntity(entity);
+        // 2. Active goals (Tier 1+2) — need full fields for status tracking
+        const allGoals = Object.entries(this.memoryStore.getAllEntities('goals'))
+            .filter(([, e]) => e.tier < 3)
+            .sort(([, a], [, b]) => b.importance - a.importance);
+        for (const [id, entity] of allGoals) {
+            state.goals[id] = fullEntity(entity);
+            if (measure() > MAX_CHARS) {
+                state.goals[id] = summaryEntity(entity);
+            }
         }
 
-        // Events — skip Tier 3, cap to most recent N
+        // 3. Characters (Tier 1+2) — full if budget allows, then summary
+        const allChars = Object.entries(this.memoryStore.getAllEntities('characters'))
+            .filter(([, e]) => e.tier < 3)
+            .sort(([, a], [, b]) => b.importance - a.importance);
+        for (const [id, entity] of allChars) {
+            if (measure() > MAX_CHARS) {
+                state.characters[id] = summaryEntity(entity);
+            } else {
+                state.characters[id] = fullEntity(entity);
+            }
+        }
+
+        // 4. Locations (Tier 1+2) — full if budget allows, then summary
+        const allLocs = Object.entries(this.memoryStore.getAllEntities('locations'))
+            .filter(([, e]) => e.tier < 3)
+            .sort(([, a], [, b]) => b.importance - a.importance);
+        for (const [id, entity] of allLocs) {
+            if (measure() > MAX_CHARS) {
+                state.locations[id] = summaryEntity(entity);
+            } else {
+                state.locations[id] = fullEntity(entity);
+            }
+        }
+
+        // 5. Events — most recent N, summary only (just name + turn)
         const allEvents = Object.entries(this.memoryStore.getAllEntities('events'))
-            .filter(([, entity]) => entity.tier < 3)
+            .filter(([, e]) => e.tier < 3)
             .sort(([, a], [, b]) => (b.fields.turn || b.createdTurn || 0) - (a.fields.turn || a.createdTurn || 0))
             .slice(0, MAX_EVENTS);
         for (const [id, entity] of allEvents) {
-            state.events[id] = stripEntity(entity);
+            state.events[id] = summaryEntity(entity);
         }
 
         return state;
