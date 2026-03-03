@@ -327,6 +327,19 @@ function bindSettingsListeners() {
     // Test connection
     $('#rp_memory_test_connection').on('click', testConnection);
 
+    // Open floating panel
+    $('#rp_memory_open_panel').on('click', () => {
+        // Ensure floating UI exists
+        if (!$('.rp-mem-wrapper').length) initFloatingUI();
+        // Expand nav if collapsed
+        const $nav = $('.rp-mem-nav');
+        if ($nav.hasClass('collapsed')) $nav.removeClass('collapsed');
+        // Show first category that has entities, or mainCharacter by default
+        const counts = memoryStore ? memoryStore.getCounts() : {};
+        const firstPopulated = CATEGORY_DEFS.find(c => (counts[c.key] || 0) > 0);
+        showCategoryPanel(firstPopulated ? firstPopulated.key : 'mainCharacter');
+    });
+
     // Force extract
     $('#rp_memory_force_extract').on('click', forceExtract);
 
