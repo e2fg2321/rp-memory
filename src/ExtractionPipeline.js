@@ -19,8 +19,8 @@ export class ExtractionPipeline {
         const settings = this.getSettings();
         const chat = context.chat;
 
-        // Step 1: Gather recent messages
-        const recentMessages = this._getRecentMessages(chat, settings.messagesPerExtraction);
+        // Step 1: Gather recent messages (setting is in exchanges, each exchange = 2 messages)
+        const recentMessages = this._getRecentMessages(chat, settings.messagesPerExtraction * 2);
 
         if (recentMessages.length === 0) {
             console.debug('[RP Memory] No messages to extract from');

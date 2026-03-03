@@ -174,38 +174,50 @@ export class OpenRouterClient {
 
     /**
      * Fetch available embedding models from OpenRouter.
-     * Filters to models with modality:embedding architecture.
+     * The /embeddings/models endpoint requires auth, so try it first,
+     * fall back to a hardcoded list of known models.
      */
     async fetchEmbeddingModels() {
-        const response = await fetch(`${this.baseUrl}/models`, {
-            headers: {
-                'HTTP-Referer': 'https://sillytavern.app',
-                'X-Title': 'RP Memory Extension',
-            },
-        });
+        // Try the authenticated endpoint first
+        if (this.apiKey) {
+            try {
+                const response = await fetch(`${this.baseUrl}/embeddings/models`, {
+                    headers: {
+                        'Authorization': `Bearer ${this.apiKey}`,
+                        'HTTP-Referer': 'https://sillytavern.app',
+                        'X-Title': 'RP Memory Extension',
+                    },
+                });
 
-        if (!response.ok) {
-            throw new Error(`Failed to fetch models: ${response.status}`);
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.data?.length > 0) {
+                        return data.data
+                            .sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id))
+                            .map(m => ({
+                                id: m.id,
+                                name: m.name || m.id,
+                                promptPrice: m.pricing?.prompt,
+                                contextLength: m.context_length,
+                            }));
+                    }
+                }
+            } catch (_) {
+                // Fall through to hardcoded list
+            }
         }
 
-        const data = await response.json();
-
-        return data.data
-            .filter(m => {
-                const modalities = m.architecture?.output_modalities || [];
-                return modalities.includes('embedding') || modalities.includes('embeddings');
-            })
-            .sort((a, b) => {
-                const aPrice = parseFloat(a.pricing?.prompt || '999');
-                const bPrice = parseFloat(b.pricing?.prompt || '999');
-                return aPrice - bPrice;
-            })
-            .map(m => ({
-                id: m.id,
-                name: m.name,
-                promptPrice: m.pricing?.prompt,
-                contextLength: m.context_length,
-            }));
+        // Fallback: known OpenRouter embedding models
+        return [
+            { id: 'cohere/embed-english-v3.0', name: 'Cohere: Embed English v3.0' },
+            { id: 'cohere/embed-multilingual-v3.0', name: 'Cohere: Embed Multilingual v3.0' },
+            { id: 'google/gemini-embedding-001', name: 'Google: Gemini Embedding 001' },
+            { id: 'mistralai/mistral-embed-2312', name: 'Mistral: Embed' },
+            { id: 'openai/text-embedding-3-large', name: 'OpenAI: Text Embedding 3 Large' },
+            { id: 'openai/text-embedding-3-small', name: 'OpenAI: Text Embedding 3 Small' },
+            { id: 'openai/text-embedding-ada-002', name: 'OpenAI: Text Embedding Ada 002' },
+            { id: 'qwen/qwen3-embedding-8b', name: 'Qwen: Qwen3 Embedding 8B' },
+        ];
     }
 
     _sleep(ms) {

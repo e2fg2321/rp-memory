@@ -28,7 +28,7 @@ const defaultSettings = {
     injectionDepth: 2,
     injectionRole: extension_prompt_roles.SYSTEM,
     userMessageWeight: 'high',
-    messagesPerExtraction: 10,
+    messagesPerExtraction: 5,
     maxRetries: 2,
     debugMode: true,
     embeddingsEnabled: false,
@@ -392,7 +392,7 @@ async function injectMemoryPrompt() {
     if (s.embeddingsEnabled && apiKey && embeddingService) {
         try {
             const context = getContext();
-            const recentMessages = getRecentMessageTexts(context, s.messagesPerExtraction);
+            const recentMessages = getRecentMessageTexts(context, s.messagesPerExtraction * 2);
 
             if (recentMessages.length > 0) {
                 const ranked = await embeddingService.rankEntities(memoryStore, recentMessages);
@@ -1254,9 +1254,12 @@ function populateEmbeddingModelDropdown(models, preserveValue) {
     $select.empty();
 
     for (const model of models) {
-        const pricePerMillion = parseFloat(model.promptPrice || 0) * 1_000_000;
-        const priceStr = pricePerMillion < 0.01 ? 'free' : `$${pricePerMillion.toFixed(2)}/1M`;
-        const label = `${model.name} (${priceStr})`;
+        let label = model.name || model.id;
+        if (model.promptPrice) {
+            const pricePerMillion = parseFloat(model.promptPrice) * 1_000_000;
+            const priceStr = pricePerMillion < 0.01 ? 'free' : `$${pricePerMillion.toFixed(2)}/1M`;
+            label += ` (${priceStr})`;
+        }
         $select.append(`<option value="${escapeHtml(model.id)}">${escapeHtml(label)}</option>`);
     }
 
