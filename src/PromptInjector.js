@@ -535,13 +535,45 @@ export class PromptInjector {
 
     /**
      * Format reflections section for injection.
+     * Groups by branch (plot vs portrayal) with sub-headings by horizon.
      */
     _formatReflections(reflections) {
         const l = this.labels;
+        const lang = this.getLang();
+
+        // Group by branch
+        const plotRefs = reflections.filter(r => r.branch !== 'portrayal');
+        const portrayalRefs = reflections.filter(r => r.branch === 'portrayal');
+
         const lines = [`## ${l.storyContext}`];
 
-        for (const ref of reflections) {
-            lines.push(`- ${ref.text}`);
+        if (plotRefs.length > 0) {
+            const plotLabel = lang === 'zh' ? '剧情线索' : 'Plot Threads';
+            lines.push(`### ${plotLabel}`);
+            // Sort: short horizon first, then mid, then long
+            const horizonOrder = { short: 0, mid: 1, long: 2 };
+            plotRefs.sort((a, b) => (horizonOrder[a.horizon] || 0) - (horizonOrder[b.horizon] || 0));
+            for (const ref of plotRefs) {
+                const tag = ref.horizon === 'mid' ? (lang === 'zh' ? '[持续]' : '[Ongoing]')
+                    : ref.horizon === 'long' ? (lang === 'zh' ? '[长期]' : '[Long-term]')
+                        : (lang === 'zh' ? '[近期]' : '[Recent]');
+                lines.push(`- ${tag} ${ref.text}`);
+            }
+        }
+
+        if (portrayalRefs.length > 0) {
+            const portLabel = lang === 'zh' ? '角色刻画' : 'Character Portrayal';
+            lines.push(`### ${portLabel}`);
+            for (const ref of portrayalRefs) {
+                lines.push(`- ${ref.text}`);
+            }
+        }
+
+        // Fallback: if no branch info, just list all
+        if (plotRefs.length === 0 && portrayalRefs.length === 0) {
+            for (const ref of reflections) {
+                lines.push(`- ${ref.text}`);
+            }
         }
 
         return lines.join('\n');

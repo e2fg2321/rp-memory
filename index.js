@@ -505,9 +505,6 @@ async function injectMemoryPrompt() {
     const apiKey = await resolveApiKey();
     const currentTurn = memoryStore.getTurnCounter();
 
-    // Gather reflections for injection
-    const reflections = memoryStore.getRecentReflections(5);
-
     if (s.embeddingsEnabled && apiKey && embeddingService) {
         try {
             const context = getContext();
@@ -533,16 +530,29 @@ async function injectMemoryPrompt() {
                     debugLog('Beat ranking failed:', beatErr.message);
                 }
 
-                promptText = injector.format(memoryStore, ranked, sceneType, currentTurn, rankedBeats, reflections);
+                // Rank reflections by relevance (not just recency)
+                let rankedReflections = null;
+                try {
+                    const rankedRefResults = await embeddingService.rankReflections(memoryStore, recentMessages, currentTurn);
+                    rankedReflections = rankedRefResults.slice(0, 8).map(r => r.reflection);
+                } catch (refErr) {
+                    debugLog('Reflection ranking failed, falling back to recency:', refErr.message);
+                    rankedReflections = memoryStore.getRecentReflections(5);
+                }
+
+                promptText = injector.format(memoryStore, ranked, sceneType, currentTurn, rankedBeats, rankedReflections);
                 debugLog('Embedding-based injection:', ranked.length, 'entities ranked, scene:', sceneType);
             } else {
+                const reflections = memoryStore.getRecentReflections(5);
                 promptText = injector.format(memoryStore, null, null, currentTurn, null, reflections);
             }
         } catch (err) {
             console.warn('[RP Memory] Embedding ranking failed, falling back to full injection:', err.message);
+            const reflections = memoryStore.getRecentReflections(5);
             promptText = injector.format(memoryStore, null, null, currentTurn, null, reflections);
         }
     } else {
+        const reflections = memoryStore.getRecentReflections(5);
         promptText = injector.format(memoryStore, null, null, currentTurn, null, reflections);
     }
 
@@ -1218,9 +1228,9 @@ async function triggerExtraction(context) {
 
         memoryStore.setLastExtractionTurn(memoryStore.getTurnCounter());
 
-        // Enforce max beats cap
+        // Emergency safety valve: hard-drop only at 2x cap
         const maxBeats = getSettings().maxBeats || 200;
-        memoryStore.enforceMaxBeats(maxBeats);
+        memoryStore.enforceMaxBeats(maxBeats * 2);
 
         saveMemoryState();
         injectMemoryPrompt();
@@ -1229,18 +1239,19 @@ async function triggerExtraction(context) {
         debugLog('Extraction complete');
         toastr.success(tt`Memory updated`, 'RP Memory', { timeOut: 2000 });
 
-        // Check if reflection should fire (async, non-blocking)
-        if (reflectionEngine && reflectionEngine.shouldReflect()) {
-            reflectionEngine.reflect().then(() => {
-                // Also compress beats if needed
-                return reflectionEngine.compress();
+        // Post-extraction: compress beats first, then optionally reflect (async, non-blocking)
+        if (reflectionEngine) {
+            reflectionEngine.compress().then(() => {
+                if (reflectionEngine.shouldReflect()) {
+                    return reflectionEngine.reflect();
+                }
             }).then(() => {
                 saveMemoryState();
                 injectMemoryPrompt();
                 renderMemoryUI();
-                debugLog('Reflection complete');
+                debugLog('Post-extraction tasks complete');
             }).catch(err => {
-                console.warn('[RP Memory] Reflection/compression failed:', err.message);
+                console.warn('[RP Memory] Post-extraction tasks failed:', err.message);
             });
         }
     } catch (err) {
@@ -1335,9 +1346,9 @@ async function forceExtract() {
 
         memoryStore.setLastExtractionTurn(memoryStore.getTurnCounter());
 
-        // Enforce max beats cap
+        // Emergency safety valve: hard-drop only at 2x cap
         const maxBeats = s.maxBeats || 200;
-        memoryStore.enforceMaxBeats(maxBeats);
+        memoryStore.enforceMaxBeats(maxBeats * 2);
 
         saveMemoryState();
         injectMemoryPrompt();
@@ -1347,17 +1358,19 @@ async function forceExtract() {
         debugLog('Manual extraction complete');
         toastr.success(label, 'RP Memory', { timeOut: 3000 });
 
-        // Check if reflection should fire (async, non-blocking)
-        if (reflectionEngine && reflectionEngine.shouldReflect()) {
-            reflectionEngine.reflect().then(() => {
-                return reflectionEngine.compress();
+        // Post-extraction: compress beats first, then optionally reflect (async, non-blocking)
+        if (reflectionEngine) {
+            reflectionEngine.compress().then(() => {
+                if (reflectionEngine.shouldReflect()) {
+                    return reflectionEngine.reflect();
+                }
             }).then(() => {
                 saveMemoryState();
                 injectMemoryPrompt();
                 renderMemoryUI();
-                debugLog('Reflection complete (manual extraction)');
+                debugLog('Post-extraction tasks complete (manual)');
             }).catch(err => {
-                console.warn('[RP Memory] Reflection/compression failed:', err.message);
+                console.warn('[RP Memory] Post-extraction tasks failed:', err.message);
             });
         }
     } catch (err) {
@@ -1896,10 +1909,15 @@ function buildReflectionCardHtml(ref) {
     const typeIcon = typeLabels[ref.type] || '💡';
     const participants = (ref.participants || []).join(', ');
 
+    // Show horizon/branch tags if present
+    const horizonTag = ref.horizon ? `[${ref.horizon}]` : '';
+    const branchTag = ref.branch ? `${ref.branch}` : '';
+    const metaInfo = [horizonTag, branchTag].filter(Boolean).join(' ');
+
     return `
     <div class="rp-mem-card" style="cursor:default;">
         <div class="rp-mem-card-header">
-            <span class="rp-mem-card-name">${typeIcon} ${escapeHtml(ref.type || 'observation')}</span>
+            <span class="rp-mem-card-name">${typeIcon} ${escapeHtml(ref.type || 'observation')}${metaInfo ? ` <span style="opacity:0.6;font-size:0.85em">${escapeHtml(metaInfo)}</span>` : ''}</span>
             <span class="rp-mem-card-tier">${escapeHtml(tt`Turn`)} ${ref.storyTurn}</span>
             <span class="rp-mem-card-importance">${ref.importance}</span>
         </div>

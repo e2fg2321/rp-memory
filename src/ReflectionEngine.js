@@ -49,13 +49,14 @@ export class ReflectionEngine {
             return;
         }
 
-        // Gather key entities (Tier 1-2) across categories
+        // Gather key entities (Tier 1-2) across categories — include IDs for participant matching
         const categories = ['mainCharacter', 'characters', 'locations', 'goals', 'events'];
         const keyEntities = [];
         for (const category of categories) {
             const entities = this.memoryStore.getEntitiesByTier(category, [1, 2]);
             for (const entity of entities) {
                 keyEntities.push({
+                    id: entity.id,
                     name: entity.name,
                     category,
                     importance: entity.importance,
@@ -81,10 +82,13 @@ export class ReflectionEngine {
             if (reflections && reflections.length > 0) {
                 const currentTurn = this.memoryStore.getTurnCounter();
 
-                for (const ref of reflections) {
+                for (let i = 0; i < reflections.length; i++) {
+                    const ref = reflections[i];
                     this.memoryStore.addReflection({
-                        id: `reflection-${currentTurn}-${ref.type}`,
+                        id: `reflection-${currentTurn}-${ref.type || 'obs'}-${i}`,
                         type: ref.type || 'plot_thread',
+                        horizon: ref.horizon || 'short',
+                        branch: ref.branch || 'plot',
                         text: ref.text,
                         participants: Array.isArray(ref.participants) ? ref.participants : [],
                         sourceTurns: recentBeats.map(b => b.storyTurn),
@@ -110,7 +114,7 @@ export class ReflectionEngine {
 
     /**
      * Compress old beats when count exceeds the cap.
-     * Groups old beats by participants and type, summarizes each group.
+     * Groups old beats by type, summarizes each group via LLM.
      */
     async compress() {
         const settings = this.getSettings();
@@ -191,7 +195,7 @@ export class ReflectionEngine {
         this.memoryStore.setBeats(newBeats);
 
         if (settings.debugMode) {
-            console.debug(`[RP Memory] Beat compression complete: ${beats.length} → ${newBeats.length} beats`);
+            console.debug(`[RP Memory] Beat compression complete: ${beats.length} -> ${newBeats.length} beats`);
         }
     }
 

@@ -47,8 +47,7 @@ export const TAVERNDB_TABLE_PROMPT_GROUP = [
   },
   {
     "role": "USER",
-    "content": "你接下来需要扮演一个\"填表用的美杜莎（CoAT-Table Medusa）\";
-    "content": "收到命令，守护者美杜莎将立刻开始行动，我将严格遵守用户的要求与用户要求我输出的内容，绝对不会输出任何用户要求以外的或者用户禁止输出的内容。"
+    "content": "你接下来需要扮演一个\"填表用的美杜莎（CoAT-Table Medusa）\"；\n收到命令，守护者美杜莎将立刻开始行动，我将严格遵守用户的要求与用户要求我输出的内容，绝对不会输出任何用户要求以外的或者用户禁止输出的内容。"
   },
   {
     "role": "assistant",
@@ -508,28 +507,38 @@ importance（1-10）、type（"conflict" | "discovery" | "relationship" | "decis
 
     const pinnedBlock = stateSections.length > 0 ? stateSections.join('\n\n') : '';
 
+    // Compact entity catalog for dedup (all known entities: id, name, aliases)
+    const catalog = currentState.entityCatalog || [];
+    const catalogBlock = catalog.length > 0
+      ? `=== ALL KNOWN ENTITIES (use these IDs, do NOT create duplicates) ===\n${JSON.stringify(catalog)}`
+      : '';
+
     if (lang === 'zh') {
       const parts = [];
       if (scenarioContext) parts.push(`=== 角色设定 ===\n${scenarioContext}`);
-      if (pinnedBlock) parts.push(`置顶实体（不要重复创建）：\n${pinnedBlock}`);
+      if (catalogBlock) parts.push(catalogBlock);
+      if (pinnedBlock) parts.push(`置顶实体详情（不要重复创建）：\n${pinnedBlock}`);
       if (precedingContext) parts.push(`=== 前文（仅供上下文参考，不从此部分提取）===\n${precedingContext}`);
       parts.push(`=== 需要提取的消息 ===\n${messages}`);
       parts.push(`用户的角色是 "${userName}" — 仅在 mainCharacter 类别中追踪他们（id 为 "main-character"），不要放在 characters 中。
 主要 AI 角色是 "${charName}" — 如果有重要更新，请在 characters 中追踪他们。
 
-提取所有6个类别中的变更。仅输出差异 — 新增或变更的实体。没有变更的类别使用空数组 []。始终为当前消息包含1-4个节拍。`);
+提取所有6个类别中的变更。仅输出差异 — 新增或变更的实体。没有变更的类别使用空数组 []。始终为当前消息包含1-4个节拍。
+如果一个实体已在上方的已知实体列表中（包括其别名），请使用其现有的 ID 和名称。`);
       return parts.join('\n\n');
     }
 
     const parts = [];
     if (scenarioContext) parts.push(`=== CHARACTER SYSTEM PROMPT ===\n${scenarioContext}`);
-    if (pinnedBlock) parts.push(`PINNED ENTITIES (do not re-create):\n${pinnedBlock}`);
+    if (catalogBlock) parts.push(catalogBlock);
+    if (pinnedBlock) parts.push(`PINNED ENTITY DETAILS (do not re-create):\n${pinnedBlock}`);
     if (precedingContext) parts.push(`=== PRECEDING CONTEXT (for reference only — do NOT extract from this section) ===\n${precedingContext}`);
     parts.push(`=== MESSAGES TO EXTRACT FROM ===\n${messages}`);
     parts.push(`The user's character is "${userName}" — track them ONLY in the mainCharacter category (id "main-character"), not in characters.
 The primary AI character is "${charName}" — DO track them in characters if they have meaningful updates.
 
-Extract all changes across all 6 categories. Output only the diff — new or changed entities. Use empty arrays [] for categories with no changes. Always include 1-4 beats for the current messages.`);
+Extract all changes across all 6 categories. Output only the diff — new or changed entities. Use empty arrays [] for categories with no changes. Always include 1-4 beats for the current messages.
+If an entity already exists in the ALL KNOWN ENTITIES list above (including its aliases), use its existing ID and name.`);
     return parts.join('\n\n');
   }
 

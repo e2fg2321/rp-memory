@@ -258,7 +258,8 @@ export class ExtractionPipeline {
     }
 
     /**
-     * Build extraction state: Tier 1 (pinned) entities ONLY.
+     * Build extraction state: Tier 1 (pinned) entities with full detail,
+     * plus a compact catalog of ALL entities (id, name, aliases) for dedup.
      * Unwraps provenance fields to plain strings for the LLM prompt.
      */
     _buildExtractionState() {
@@ -289,25 +290,22 @@ export class ExtractionPipeline {
             state.mainCharacter = stripEntity(mc);
         }
 
-        const allChars = this.memoryStore.getAllEntities('characters');
-        for (const [id, entity] of Object.entries(allChars)) {
-            if (entity.tier === 1) state.characters[id] = stripEntity(entity);
+        // Compact catalog of ALL entities for dedup (id, name, aliases only)
+        const entityCatalog = [];
+
+        if (mc) {
+            entityCatalog.push({ id: mc.id, name: mc.name, aliases: mc.aliases || [], category: 'mainCharacter' });
         }
 
-        const allLocs = this.memoryStore.getAllEntities('locations');
-        for (const [id, entity] of Object.entries(allLocs)) {
-            if (entity.tier === 1) state.locations[id] = stripEntity(entity);
+        for (const cat of CATEGORIES) {
+            const all = this.memoryStore.getAllEntities(cat);
+            for (const [id, entity] of Object.entries(all)) {
+                entityCatalog.push({ id, name: entity.name, aliases: entity.aliases || [], category: cat });
+                if (entity.tier === 1) state[cat][id] = stripEntity(entity);
+            }
         }
 
-        const allGoals = this.memoryStore.getAllEntities('goals');
-        for (const [id, entity] of Object.entries(allGoals)) {
-            if (entity.tier === 1) state.goals[id] = stripEntity(entity);
-        }
-
-        const allEvents = this.memoryStore.getAllEntities('events');
-        for (const [id, entity] of Object.entries(allEvents)) {
-            if (entity.tier === 1) state.events[id] = stripEntity(entity);
-        }
+        state.entityCatalog = entityCatalog;
 
         return state;
     }

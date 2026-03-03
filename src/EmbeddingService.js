@@ -7,6 +7,7 @@ export class EmbeddingService {
         this.getSettings = getSettings;
         this._cache = new Map(); // key = "category:entityId" → number[]
         this._beatCache = new Map(); // key = beatId → number[]
+        this._reflectionCache = new Map(); // key = reflectionId → number[]
         this._contextCache = null; // { hash, embedding }
         this._sceneAnchors = null; // Map<string, number[]> — scene type → embedding
     }
@@ -105,6 +106,7 @@ export class EmbeddingService {
 
     /**
      * Rank ALL entities (all tiers) by tri-score against recent messages.
+     * Applies adjacency expansion via beat co-occurrence.
      * Also detects the current scene type using the same context embedding.
      * @param {object} memoryStore
      * @param {string[]} recentMessages
@@ -166,7 +168,48 @@ export class EmbeddingService {
 
         // Sort by score descending
         ranked.sort((a, b) => b.score - a.score);
+
+        // Adjacency expansion: boost entities that co-occur with top-ranked entities in beats
+        this._applyAdjacencyBoost(ranked, memoryStore);
+
         return { ranked, sceneType: sceneInfo.type };
+    }
+
+    /**
+     * Apply adjacency expansion via beat co-occurrence.
+     * Entities that frequently co-occur with top-ranked entities in beats get a score boost.
+     */
+    _applyAdjacencyBoost(ranked, memoryStore) {
+        const topN = 10;
+        const topIds = new Set(ranked.slice(0, topN).map(r => r.entity.id));
+        const beats = memoryStore.getBeats();
+        const coOccurrence = new Map(); // entityId → frequency
+
+        for (const beat of beats) {
+            const participants = beat.participants || [];
+            if (participants.some(p => topIds.has(p))) {
+                for (const p of participants) {
+                    if (!topIds.has(p)) {
+                        coOccurrence.set(p, (coOccurrence.get(p) || 0) + 1);
+                    }
+                }
+            }
+        }
+
+        // Boost co-occurring entities (max boost = 0.25)
+        let boosted = false;
+        for (const item of ranked) {
+            const freq = coOccurrence.get(item.entity.id) || 0;
+            if (freq > 0) {
+                item.score += 0.05 * Math.min(freq, 5);
+                boosted = true;
+            }
+        }
+
+        // Re-sort if any boost was applied
+        if (boosted) {
+            ranked.sort((a, b) => b.score - a.score);
+        }
     }
 
     /**
@@ -213,6 +256,56 @@ export class EmbeddingService {
             const score = 0.25 * recency + 0.25 * importance + 0.5 * cosineSim;
 
             ranked.push({ beat, score });
+        }
+
+        ranked.sort((a, b) => b.score - a.score);
+        return ranked;
+    }
+
+    /**
+     * Rank reflections by tri-score against recent messages.
+     * @param {object} memoryStore
+     * @param {string[]} recentMessages
+     * @param {number} currentTurn
+     * @returns {Promise<Array<{reflection, score}>>}
+     */
+    async rankReflections(memoryStore, recentMessages, currentTurn = 0) {
+        const reflections = memoryStore.getReflections();
+        if (reflections.length === 0) return [];
+
+        const contextEmbedding = await this.getContextEmbedding(recentMessages);
+
+        // Batch-compute any missing reflection embeddings
+        const missingIndices = [];
+        const missingTexts = [];
+        for (let i = 0; i < reflections.length; i++) {
+            const ref = reflections[i];
+            if (!this._reflectionCache.has(ref.id)) {
+                missingIndices.push(i);
+                missingTexts.push(ref.text);
+            }
+        }
+
+        if (missingTexts.length > 0) {
+            const embeddings = await this.embedTexts(missingTexts);
+            for (let j = 0; j < missingIndices.length; j++) {
+                const idx = missingIndices[j];
+                this._reflectionCache.set(reflections[idx].id, embeddings[j]);
+            }
+        }
+
+        // Score each reflection
+        const ranked = [];
+        for (const ref of reflections) {
+            const refEmbedding = this._reflectionCache.get(ref.id);
+            const cosineSim = this.cosineSimilarity(contextEmbedding, refEmbedding);
+
+            const turnsSince = currentTurn - (ref.storyTurn || 0);
+            const recency = 1 / (1 + turnsSince * 0.1);
+            const importance = (ref.importance || 5) / 10;
+            const score = 0.25 * recency + 0.25 * importance + 0.5 * cosineSim;
+
+            ranked.push({ reflection: ref, score });
         }
 
         ranked.sort((a, b) => b.score - a.score);
@@ -310,11 +403,19 @@ export class EmbeddingService {
     }
 
     /**
+     * Invalidate a cached reflection embedding.
+     */
+    invalidateReflection(reflectionId) {
+        this._reflectionCache.delete(reflectionId);
+    }
+
+    /**
      * Clear all cached embeddings.
      */
     clearCache() {
         this._cache.clear();
         this._beatCache.clear();
+        this._reflectionCache.clear();
         this._contextCache = null;
         this._sceneAnchors = null;
     }
@@ -342,6 +443,15 @@ export class EmbeddingService {
             result.beatEmbeddings = beatEmbeddings;
         }
 
+        // Persist reflection embeddings
+        if (this._reflectionCache.size > 0) {
+            const reflectionEmbeddings = {};
+            for (const [key, vec] of this._reflectionCache.entries()) {
+                reflectionEmbeddings[key] = vec;
+            }
+            result.reflectionEmbeddings = reflectionEmbeddings;
+        }
+
         if (this._sceneAnchors) {
             const sceneAnchors = {};
             for (const [type, vec] of this._sceneAnchors.entries()) {
@@ -359,6 +469,7 @@ export class EmbeddingService {
     load(savedState) {
         this._cache.clear();
         this._beatCache.clear();
+        this._reflectionCache.clear();
         this._contextCache = null;
         this._sceneAnchors = null;
 
@@ -380,6 +491,14 @@ export class EmbeddingService {
                 this._beatCache.set(key, vec);
             }
             console.debug(`[RP Memory] Loaded ${this._beatCache.size} persisted beat embeddings`);
+        }
+
+        // Restore reflection embeddings
+        if (savedState.reflectionEmbeddings) {
+            for (const [key, vec] of Object.entries(savedState.reflectionEmbeddings)) {
+                this._reflectionCache.set(key, vec);
+            }
+            console.debug(`[RP Memory] Loaded ${this._reflectionCache.size} persisted reflection embeddings`);
         }
 
         if (savedState.sceneAnchors) {
