@@ -9,8 +9,9 @@ export class MemoryStore {
 
     _createEmptyState() {
         return {
-            version: 1,
+            version: 2,
             lastExtractionTurn: 0,
+            lastReflectionTurn: 0,
             extractionInProgress: false,
             turnCounter: 0,
             characters: {},
@@ -18,18 +19,94 @@ export class MemoryStore {
             mainCharacter: null,
             goals: {},
             events: {},
+            beats: [],
+            reflections: [],
         };
     }
 
     load(savedState) {
-        if (savedState && savedState.version === 1) {
+        if (!savedState) {
+            this._state = this._createEmptyState();
+            return;
+        }
+
+        if (savedState.version === 1) {
+            // Migrate v1 → v2: convert plain string fields to provenance objects
             this._state = deepClone(savedState);
-            // Ensure extractionInProgress is reset on load (in case of crash mid-extraction)
+            this._state.version = 2;
             this._state.extractionInProgress = false;
-            // Remove embedding data — managed separately by EmbeddingService
+            this._state.lastReflectionTurn = 0;
+            this._state.beats = [];
+            this._state.reflections = [];
             delete this._state._embeddings;
+
+            // Migrate field values to provenance format
+            this._migrateFieldsToProvenance();
+            // Ensure aliases exist on all entities
+            this._ensureAliases();
+        } else if (savedState.version === 2) {
+            this._state = deepClone(savedState);
+            this._state.extractionInProgress = false;
+            delete this._state._embeddings;
+            // Ensure arrays exist (defensive)
+            if (!Array.isArray(this._state.beats)) this._state.beats = [];
+            if (!Array.isArray(this._state.reflections)) this._state.reflections = [];
         } else {
             this._state = this._createEmptyState();
+        }
+    }
+
+    /**
+     * Migrate v1 plain-string fields to provenance-wrapped { value, sourceTurns, lastUpdated }.
+     */
+    _migrateFieldsToProvenance() {
+        const migrateEntity = (entity) => {
+            if (!entity || !entity.fields) return;
+            for (const [key, value] of Object.entries(entity.fields)) {
+                if (value === null || value === undefined) continue;
+                // Skip if already provenance-wrapped
+                if (typeof value === 'object' && 'value' in value) continue;
+                // Convert plain values
+                entity.fields[key] = {
+                    value: String(value),
+                    sourceTurns: [],
+                    lastUpdated: 0,
+                };
+            }
+        };
+
+        // Main character
+        if (this._state.mainCharacter) {
+            migrateEntity(this._state.mainCharacter);
+        }
+
+        // All other categories
+        for (const cat of CATEGORIES) {
+            const entities = this._state[cat] || {};
+            for (const entity of Object.values(entities)) {
+                migrateEntity(entity);
+            }
+        }
+    }
+
+    /**
+     * Ensure all entities have an aliases array.
+     */
+    _ensureAliases() {
+        const ensureEntity = (entity) => {
+            if (!entity) return;
+            if (!Array.isArray(entity.aliases)) entity.aliases = [];
+        };
+
+        if (this._state.mainCharacter) {
+            ensureEntity(this._state.mainCharacter);
+        }
+
+        for (const cat of CATEGORIES) {
+            const entities = this._state[cat] || {};
+            for (const entity of Object.values(entities)) {
+                ensureEntity(entity);
+            }
         }
     }
 
@@ -57,6 +134,14 @@ export class MemoryStore {
 
     setLastExtractionTurn(turn) {
         this._state.lastExtractionTurn = turn;
+    }
+
+    getLastReflectionTurn() {
+        return this._state.lastReflectionTurn || 0;
+    }
+
+    setLastReflectionTurn(turn) {
+        this._state.lastReflectionTurn = turn;
     }
 
     isExtractionInProgress() {
@@ -115,6 +200,19 @@ export class MemoryStore {
     }
 
     /**
+     * Find an entity by alias (case-insensitive) across all entities in a category.
+     */
+    findEntityByAlias(category, name) {
+        const normalized = name.toLowerCase().trim();
+        const entities = this.getAllEntities(category);
+        for (const entity of Object.values(entities)) {
+            if (entity.name.toLowerCase().trim() === normalized) return entity;
+            if (entity.aliases?.some(a => a.toLowerCase().trim() === normalized)) return entity;
+        }
+        return null;
+    }
+
+    /**
      * Get counts per category for UI display.
      */
     getCounts() {
@@ -124,6 +222,8 @@ export class MemoryStore {
             mainCharacter: this._state.mainCharacter ? 1 : 0,
             goals: Object.keys(this._state.goals).length,
             events: Object.keys(this._state.events).length,
+            beats: this._state.beats.length,
+            reflections: this._state.reflections.length,
         };
     }
 
@@ -162,5 +262,87 @@ export class MemoryStore {
         }
 
         return count;
+    }
+
+    // --- Beats (Episodic Memory Layer 2) ---
+
+    addBeat(beat) {
+        this._state.beats.push(beat);
+    }
+
+    getBeats() {
+        return this._state.beats;
+    }
+
+    getRecentBeats(n) {
+        return this._state.beats
+            .slice()
+            .sort((a, b) => b.storyTurn - a.storyTurn)
+            .slice(0, n);
+    }
+
+    /**
+     * Enforce max beats cap. When exceeded, drop oldest low-importance beats
+     * (keeping those with importance >= 7).
+     */
+    enforceMaxBeats(maxBeats = 200) {
+        if (this._state.beats.length <= maxBeats) return;
+
+        // Sort by storyTurn ascending (oldest first)
+        this._state.beats.sort((a, b) => a.storyTurn - b.storyTurn);
+
+        // Keep recent 50 beats unconditionally
+        const recentCutoff = this._state.beats.length - 50;
+        const candidates = this._state.beats.slice(0, recentCutoff);
+        const kept = this._state.beats.slice(recentCutoff);
+
+        // From candidates, keep high-importance beats
+        const filtered = candidates.filter(b => b.importance >= 7);
+
+        this._state.beats = [...filtered, ...kept];
+
+        // If still over cap, just truncate oldest
+        if (this._state.beats.length > maxBeats) {
+            this._state.beats = this._state.beats.slice(-maxBeats);
+        }
+    }
+
+    /**
+     * Replace beats array (used after compression).
+     */
+    setBeats(beats) {
+        this._state.beats = beats;
+    }
+
+    // --- Reflections (Layer 3) ---
+
+    addReflection(reflection) {
+        this._state.reflections.push(reflection);
+    }
+
+    getReflections() {
+        return this._state.reflections;
+    }
+
+    getRecentReflections(n) {
+        return this._state.reflections
+            .slice()
+            .sort((a, b) => b.storyTurn - a.storyTurn)
+            .slice(0, n);
+    }
+
+    /**
+     * Enforce max reflections cap.
+     * When exceeded, drop oldest low-importance reflections.
+     */
+    enforceMaxReflections(maxReflections = 30) {
+        if (this._state.reflections.length <= maxReflections) return;
+
+        // Sort by importance descending, then by storyTurn descending
+        this._state.reflections.sort((a, b) =>
+            b.importance - a.importance || b.storyTurn - a.storyTurn,
+        );
+
+        this._state.reflections = this._state.reflections.slice(0, maxReflections);
     }
 }

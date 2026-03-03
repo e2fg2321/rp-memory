@@ -1,10 +1,12 @@
 import { SCENE_ANCHORS } from './SceneConfig.js';
+import { unwrapField } from './Utils.js';
 
 export class EmbeddingService {
     constructor(apiClient, getSettings) {
         this.apiClient = apiClient;
         this.getSettings = getSettings;
         this._cache = new Map(); // key = "category:entityId" → number[]
+        this._beatCache = new Map(); // key = beatId → number[]
         this._contextCache = null; // { hash, embedding }
         this._sceneAnchors = null; // Map<string, number[]> — scene type → embedding
     }
@@ -21,9 +23,6 @@ export class EmbeddingService {
 
     /**
      * Get the embedding for an entity, using cache when available.
-     * @param {string} category
-     * @param {object} entity
-     * @returns {Promise<number[]>}
      */
     async getEntityEmbedding(category, entity) {
         const cacheKey = `${category}:${entity.id}`;
@@ -39,9 +38,6 @@ export class EmbeddingService {
 
     /**
      * Get the embedding for recent chat context.
-     * Context embeddings are never persisted — they change every exchange.
-     * @param {string[]} messages - Array of recent message strings
-     * @returns {Promise<number[]>}
      */
     async getContextEmbedding(messages) {
         const hash = messages.length + ':' + messages.join('|').slice(-200);
@@ -56,8 +52,7 @@ export class EmbeddingService {
     }
 
     /**
-     * Ensure scene anchor embeddings are cached. Embeds all SCENE_ANCHORS
-     * values in a single batch API call. Runs once per session (or after model change).
+     * Ensure scene anchor embeddings are cached.
      */
     async _ensureSceneAnchors() {
         if (this._sceneAnchors) return;
@@ -75,8 +70,6 @@ export class EmbeddingService {
     /**
      * Detect the current scene type by comparing a context embedding
      * against cached scene anchor embeddings.
-     * @param {number[]} contextEmbedding
-     * @returns {{ type: string, scores: Object<string, number> }}
      */
     detectSceneType(contextEmbedding) {
         if (!this._sceneAnchors) {
@@ -100,16 +93,27 @@ export class EmbeddingService {
     }
 
     /**
-     * Rank all tier 1-2 entities by relevance to recent messages.
+     * Tri-score: weighted combination of recency, importance, and relevance.
+     */
+    _triScore(entity, cosineSim, currentTurn) {
+        const turnsSince = currentTurn - (entity.lastMentionedTurn || entity.createdTurn || 0);
+        const recency = 1 / (1 + turnsSince * 0.1);
+        const importance = (entity.importance || 5) / 10;
+        const relevance = cosineSim;
+        return 0.25 * recency + 0.25 * importance + 0.5 * relevance;
+    }
+
+    /**
+     * Rank ALL entities (all tiers) by tri-score against recent messages.
      * Also detects the current scene type using the same context embedding.
      * @param {object} memoryStore
      * @param {string[]} recentMessages
-     * @returns {Promise<{ranked: Array<{category: string, entity: object, score: number}>, sceneType: string}>}
+     * @param {number} currentTurn - Current story turn for recency scoring
+     * @returns {Promise<{ranked, sceneType}>}
      */
-    async rankEntities(memoryStore, recentMessages) {
+    async rankEntities(memoryStore, recentMessages, currentTurn = 0) {
         const contextEmbedding = await this.getContextEmbedding(recentMessages);
 
-        // Ensure scene anchors are embedded, then detect scene type
         await this._ensureSceneAnchors();
         const sceneInfo = this.detectSceneType(contextEmbedding);
 
@@ -117,8 +121,9 @@ export class EmbeddingService {
         const entitiesToRank = [];
 
         for (const category of categories) {
-            const entities = memoryStore.getEntitiesByTier(category, [1, 2]);
-            for (const entity of entities) {
+            // Include ALL entities (all tiers), not just Tier 1-2
+            const allEntities = memoryStore.getAllEntities(category);
+            for (const entity of Object.values(allEntities)) {
                 entitiesToRank.push({ category, entity });
             }
         }
@@ -149,12 +154,13 @@ export class EmbeddingService {
             }
         }
 
-        // Score each entity
+        // Score each entity using tri-score
         const ranked = [];
         for (const { category, entity } of entitiesToRank) {
             const cacheKey = `${category}:${entity.id}`;
             const entityEmbedding = this._cache.get(cacheKey);
-            const score = this.cosineSimilarity(contextEmbedding, entityEmbedding);
+            const cosineSim = this.cosineSimilarity(contextEmbedding, entityEmbedding);
+            const score = this._triScore(entity, cosineSim, currentTurn);
             ranked.push({ category, entity, score });
         }
 
@@ -164,10 +170,58 @@ export class EmbeddingService {
     }
 
     /**
+     * Rank beats by tri-score against recent messages.
+     * @param {object} memoryStore
+     * @param {string[]} recentMessages
+     * @param {number} currentTurn
+     * @returns {Promise<Array<{beat, score}>>}
+     */
+    async rankBeats(memoryStore, recentMessages, currentTurn = 0) {
+        const beats = memoryStore.getBeats();
+        if (beats.length === 0) return [];
+
+        const contextEmbedding = await this.getContextEmbedding(recentMessages);
+
+        // Batch-compute any missing beat embeddings
+        const missingIndices = [];
+        const missingTexts = [];
+        for (let i = 0; i < beats.length; i++) {
+            const beat = beats[i];
+            if (!this._beatCache.has(beat.id)) {
+                missingIndices.push(i);
+                missingTexts.push(beat.text);
+            }
+        }
+
+        if (missingTexts.length > 0) {
+            const embeddings = await this.embedTexts(missingTexts);
+            for (let j = 0; j < missingIndices.length; j++) {
+                const idx = missingIndices[j];
+                this._beatCache.set(beats[idx].id, embeddings[j]);
+            }
+        }
+
+        // Score each beat
+        const ranked = [];
+        for (const beat of beats) {
+            const beatEmbedding = this._beatCache.get(beat.id);
+            const cosineSim = this.cosineSimilarity(contextEmbedding, beatEmbedding);
+
+            const turnsSince = currentTurn - (beat.storyTurn || 0);
+            const recency = 1 / (1 + turnsSince * 0.1);
+            const importance = (beat.importance || 5) / 10;
+            const score = 0.25 * recency + 0.25 * importance + 0.5 * cosineSim;
+
+            ranked.push({ beat, score });
+        }
+
+        ranked.sort((a, b) => b.score - a.score);
+        return ranked;
+    }
+
+    /**
      * Build a natural-language text summary of an entity for embedding.
-     * @param {string} category
-     * @param {object} entity
-     * @returns {string}
+     * Handles provenance-wrapped fields by unwrapping them.
      */
     buildEntityText(category, entity) {
         const parts = [];
@@ -185,30 +239,32 @@ export class EmbeddingService {
             for (const [key, value] of Object.entries(entity.fields)) {
                 if (value === null || value === undefined || value === '') continue;
 
+                // Unwrap provenance objects
+                const plainValue = unwrapField(value);
+                if (!plainValue || plainValue === '') continue;
+
                 const label = key.charAt(0).toUpperCase() + key.slice(1).replace(/([A-Z])/g, ' $1');
 
-                if (Array.isArray(value)) {
-                    if (value.length === 0) continue;
-                    if (typeof value[0] === 'object' && value[0] !== null) {
-                        // Relationship array
-                        const formatted = value.map(v => {
+                if (Array.isArray(plainValue)) {
+                    if (plainValue.length === 0) continue;
+                    if (typeof plainValue[0] === 'object' && plainValue[0] !== null) {
+                        const formatted = plainValue.map(v => {
                             if (v.target && v.nature) return `${v.target} (${v.nature})`;
                             return JSON.stringify(v);
                         }).join(', ');
                         parts.push(`${label}: ${formatted}.`);
                     } else {
-                        parts.push(`${label}: ${value.join(', ')}.`);
+                        parts.push(`${label}: ${plainValue.join(', ')}.`);
                     }
-                } else if (typeof value === 'object') {
-                    // Nested object (e.g., status for mainCharacter)
-                    for (const [subKey, subVal] of Object.entries(value)) {
+                } else if (typeof plainValue === 'object') {
+                    for (const [subKey, subVal] of Object.entries(plainValue)) {
                         if (!subVal || (Array.isArray(subVal) && subVal.length === 0)) continue;
                         const subLabel = subKey.charAt(0).toUpperCase() + subKey.slice(1);
                         const displayVal = Array.isArray(subVal) ? subVal.join(', ') : String(subVal);
                         parts.push(`${subLabel}: ${displayVal}.`);
                     }
                 } else {
-                    parts.push(`${label}: ${value}.`);
+                    parts.push(`${label}: ${plainValue}.`);
                 }
             }
         }
@@ -218,9 +274,6 @@ export class EmbeddingService {
 
     /**
      * Compute cosine similarity between two vectors.
-     * @param {number[]} a
-     * @param {number[]} b
-     * @returns {number}
      */
     cosineSimilarity(a, b) {
         if (!a || !b || a.length !== b.length) return 0;
@@ -243,9 +296,6 @@ export class EmbeddingService {
 
     /**
      * Invalidate the cached embedding for a specific entity.
-     * Call this when an entity's fields change.
-     * @param {string} category
-     * @param {string} entityId
      */
     invalidateEntity(category, entityId) {
         const cacheKey = `${category}:${entityId}`;
@@ -253,19 +303,24 @@ export class EmbeddingService {
     }
 
     /**
-     * Clear all cached embeddings (entity + context + scene anchors).
+     * Invalidate a cached beat embedding.
+     */
+    invalidateBeat(beatId) {
+        this._beatCache.delete(beatId);
+    }
+
+    /**
+     * Clear all cached embeddings.
      */
     clearCache() {
         this._cache.clear();
+        this._beatCache.clear();
         this._contextCache = null;
         this._sceneAnchors = null;
     }
 
     /**
      * Serialize entity embeddings and scene anchors for persistence.
-     * Context embeddings are NOT persisted (they change every exchange).
-     * Stores the embedding model so we can detect model changes.
-     * @returns {object} { model, embeddings, sceneAnchors? }
      */
     serialize() {
         const embeddings = {};
@@ -278,7 +333,15 @@ export class EmbeddingService {
             embeddings,
         };
 
-        // Persist scene anchor embeddings so they don't need re-embedding on reload
+        // Persist beat embeddings
+        if (this._beatCache.size > 0) {
+            const beatEmbeddings = {};
+            for (const [key, vec] of this._beatCache.entries()) {
+                beatEmbeddings[key] = vec;
+            }
+            result.beatEmbeddings = beatEmbeddings;
+        }
+
         if (this._sceneAnchors) {
             const sceneAnchors = {};
             for (const [type, vec] of this._sceneAnchors.entries()) {
@@ -291,19 +354,16 @@ export class EmbeddingService {
     }
 
     /**
-     * Load persisted entity embeddings and scene anchors.
-     * If the saved model doesn't match the current setting, discard all
-     * (embeddings from a different model are meaningless).
-     * @param {object|null} savedState - Output of serialize(), or null
+     * Load persisted embeddings.
      */
     load(savedState) {
         this._cache.clear();
+        this._beatCache.clear();
         this._contextCache = null;
         this._sceneAnchors = null;
 
         if (!savedState || !savedState.embeddings) return;
 
-        // Model mismatch → embeddings are stale, discard
         const currentModel = this.getSettings().embeddingModel;
         if (savedState.model && savedState.model !== currentModel) {
             console.debug('[RP Memory] Embedding model changed, discarding persisted embeddings');
@@ -314,7 +374,14 @@ export class EmbeddingService {
             this._cache.set(key, vec);
         }
 
-        // Restore scene anchor embeddings
+        // Restore beat embeddings
+        if (savedState.beatEmbeddings) {
+            for (const [key, vec] of Object.entries(savedState.beatEmbeddings)) {
+                this._beatCache.set(key, vec);
+            }
+            console.debug(`[RP Memory] Loaded ${this._beatCache.size} persisted beat embeddings`);
+        }
+
         if (savedState.sceneAnchors) {
             this._sceneAnchors = new Map();
             for (const [type, vec] of Object.entries(savedState.sceneAnchors)) {

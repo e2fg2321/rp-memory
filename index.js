@@ -12,7 +12,8 @@ import { DecayEngine } from './src/DecayEngine.js';
 import { OpenRouterClient } from './src/OpenRouterClient.js';
 import { EmbeddingService } from './src/EmbeddingService.js';
 import { LanguageDetector } from './src/LanguageDetector.js';
-import { createEmptyEntity, generateId } from './src/Utils.js';
+import { ReflectionEngine } from './src/ReflectionEngine.js';
+import { createEmptyEntity, generateId, unwrapField, wrapField } from './src/Utils.js';
 
 const MODULE_NAME = 'rp_memory';
 const EXTENSION_KEY = 'rp_memory';
@@ -37,6 +38,12 @@ const defaultSettings = {
     embeddingsEnabled: false,
     embeddingModel: 'openai/text-embedding-3-small',
     language: 'auto',
+    reflectionEnabled: true,
+    reflectionThreshold: 30,
+    maxBeats: 200,
+    maxReflections: 30,
+    beatBudgetPercent: 25,
+    reflectionBudgetPercent: 15,
 };
 
 // Singletons
@@ -46,6 +53,7 @@ let apiClient = null;
 let pipeline = null;
 let decayEngine = null;
 let embeddingService = null;
+let reflectionEngine = null;
 let lastProcessedLength = 0;
 let cachedModelList = null;
 let cachedEmbeddingModelList = null;
@@ -495,6 +503,10 @@ async function injectMemoryPrompt() {
 
     let promptText;
     const apiKey = await resolveApiKey();
+    const currentTurn = memoryStore.getTurnCounter();
+
+    // Gather reflections for injection
+    const reflections = memoryStore.getRecentReflections(5);
 
     if (s.embeddingsEnabled && apiKey && embeddingService) {
         try {
@@ -502,18 +514,36 @@ async function injectMemoryPrompt() {
             const recentMessages = getRecentMessageTexts(context, s.messagesPerExtraction * 2);
 
             if (recentMessages.length > 0) {
-                const { ranked, sceneType } = await embeddingService.rankEntities(memoryStore, recentMessages);
-                promptText = injector.format(memoryStore, ranked, sceneType);
+                const { ranked, sceneType } = await embeddingService.rankEntities(memoryStore, recentMessages, currentTurn);
+
+                // Auto-promote: if a Tier 3 entity is in the top-K selected, promote to Tier 2
+                const topK = ranked.slice(0, Math.min(ranked.length, 20));
+                for (const item of topK) {
+                    if (item.entity.tier === 3) {
+                        memoryStore.updateEntity(item.category, item.entity.id, { tier: 2 });
+                        debugLog(`Auto-promoted "${item.entity.name}" from Tier 3 to Tier 2 (score: ${item.score.toFixed(3)})`);
+                    }
+                }
+
+                // Rank beats
+                let rankedBeats = null;
+                try {
+                    rankedBeats = await embeddingService.rankBeats(memoryStore, recentMessages, currentTurn);
+                } catch (beatErr) {
+                    debugLog('Beat ranking failed:', beatErr.message);
+                }
+
+                promptText = injector.format(memoryStore, ranked, sceneType, currentTurn, rankedBeats, reflections);
                 debugLog('Embedding-based injection:', ranked.length, 'entities ranked, scene:', sceneType);
             } else {
-                promptText = injector.format(memoryStore);
+                promptText = injector.format(memoryStore, null, null, currentTurn, null, reflections);
             }
         } catch (err) {
             console.warn('[RP Memory] Embedding ranking failed, falling back to full injection:', err.message);
-            promptText = injector.format(memoryStore);
+            promptText = injector.format(memoryStore, null, null, currentTurn, null, reflections);
         }
     } else {
-        promptText = injector.format(memoryStore);
+        promptText = injector.format(memoryStore, null, null, currentTurn, null, reflections);
     }
 
     setExtensionPrompt(
@@ -668,8 +698,8 @@ function renderEntityFields(category, fields) {
         if (value === null || value === undefined || value === '') continue;
         // Skip empty arrays (legacy data)
         if (Array.isArray(value) && value.length === 0) continue;
-        // Skip empty objects (legacy data)
-        if (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) continue;
+        // Skip empty objects (legacy data) — but NOT provenance objects
+        if (typeof value === 'object' && !Array.isArray(value) && !('value' in value) && Object.keys(value).length === 0) continue;
 
         const rawLabel = key.charAt(0).toUpperCase() + key.slice(1).replace(/([A-Z])/g, ' $1');
         const label = tl(rawLabel);
@@ -743,9 +773,10 @@ function resolveConflict(category, entityId, field, acceptNew) {
     if (!conflict) return;
 
     if (!acceptNew) {
-        // Revert: restore old value
+        // Revert: restore old value (wrap with provenance)
         if (entity.fields && conflict.oldValue !== undefined) {
-            entity.fields[field] = conflict.oldValue;
+            const currentTurn = memoryStore.getTurnCounter();
+            entity.fields[field] = wrapField(conflict.oldValue, currentTurn);
         }
     }
 
@@ -812,6 +843,7 @@ const FIELD_DEFS = {
         { key: 'personality', label: 'Personality', type: 'textarea' },
         { key: 'status', label: 'Status', type: 'text' },
         { key: 'relationships', label: 'Relationships', type: 'textarea' },
+        { key: '_aliases', label: 'Aliases', type: 'text', meta: true },
     ],
     locations: [
         { key: 'description', label: 'Description', type: 'textarea' },
@@ -853,19 +885,22 @@ const FIELD_DEFS = {
  */
 function displayStr(value) {
     if (!value) return '';
-    if (Array.isArray(value)) {
-        if (value.length && typeof value[0] === 'object') {
-            return value.map(v => v.target ? `${v.target}: ${v.nature || ''}` : JSON.stringify(v)).join(', ');
+    // Handle provenance-wrapped objects
+    const unwrapped = unwrapField(value);
+    if (!unwrapped && unwrapped !== 0) return '';
+    if (Array.isArray(unwrapped)) {
+        if (unwrapped.length && typeof unwrapped[0] === 'object') {
+            return unwrapped.map(v => v.target ? `${v.target}: ${v.nature || ''}` : JSON.stringify(v)).join(', ');
         }
-        return value.join(', ');
+        return unwrapped.join(', ');
     }
-    if (typeof value === 'object') {
-        return Object.entries(value)
+    if (typeof unwrapped === 'object') {
+        return Object.entries(unwrapped)
             .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
             .filter(([, v]) => v)
             .join('; ');
     }
-    return String(value);
+    return String(unwrapped);
 }
 
 let currentEditCard = null; // Track the currently editing card
@@ -922,31 +957,39 @@ function enterEditMode(category, entityId) {
     $fields.empty();
 
     for (const def of defs) {
-        const rawValue = fields[def.key];
         let inputHtml = '';
 
-        switch (def.type) {
-            case 'textarea': {
-                const val = displayStr(rawValue);
-                inputHtml = `<textarea class="rp-mem-inline-textarea" data-edit-field="${def.key}">${escapeHtml(val)}</textarea>`;
-                break;
-            }
-            case 'text': {
-                const val = displayStr(rawValue);
-                inputHtml = `<input type="text" class="rp-mem-inline-input" data-edit-field="${def.key}" value="${escapeHtml(val)}" />`;
-                break;
-            }
-            case 'number': {
-                const val = rawValue || 0;
-                inputHtml = `<input type="number" class="rp-mem-inline-input" data-edit-field="${def.key}" value="${val}" />`;
-                break;
-            }
-            case 'select': {
-                const opts = (def.options || []).map(o =>
-                    `<option value="${o.value}" ${rawValue === o.value ? 'selected' : ''}>${escapeHtml(tl(o.label))}</option>`,
-                ).join('');
-                inputHtml = `<select class="rp-mem-inline-select" data-edit-field="${def.key}">${opts}</select>`;
-                break;
+        // Handle meta fields (like aliases) that aren't in entity.fields
+        if (def.meta && def.key === '_aliases') {
+            const aliasVal = (entity.aliases || []).join(', ');
+            inputHtml = `<input type="text" class="rp-mem-inline-input" data-edit-field="${def.key}" value="${escapeHtml(aliasVal)}" />`;
+        } else {
+            const rawValue = fields[def.key];
+
+            switch (def.type) {
+                case 'textarea': {
+                    const val = displayStr(rawValue);
+                    inputHtml = `<textarea class="rp-mem-inline-textarea" data-edit-field="${def.key}">${escapeHtml(val)}</textarea>`;
+                    break;
+                }
+                case 'text': {
+                    const val = displayStr(rawValue);
+                    inputHtml = `<input type="text" class="rp-mem-inline-input" data-edit-field="${def.key}" value="${escapeHtml(val)}" />`;
+                    break;
+                }
+                case 'number': {
+                    const val = displayStr(rawValue) || 0;
+                    inputHtml = `<input type="number" class="rp-mem-inline-input" data-edit-field="${def.key}" value="${val}" />`;
+                    break;
+                }
+                case 'select': {
+                    const displayVal = displayStr(rawValue);
+                    const opts = (def.options || []).map(o =>
+                        `<option value="${o.value}" ${displayVal === o.value ? 'selected' : ''}>${escapeHtml(tl(o.label))}</option>`,
+                    ).join('');
+                    inputHtml = `<select class="rp-mem-inline-select" data-edit-field="${def.key}">${opts}</select>`;
+                    break;
+                }
             }
         }
 
@@ -983,6 +1026,14 @@ function exitEditMode(save) {
             const updatedImportance = parseFloat($card.find('.rp-mem-edit-importance-input').val()) || entity.importance;
             const updatedFields = readInlineFields($card, category, entity.fields);
 
+            // Read aliases from meta field
+            const $aliasInput = $card.find('[data-edit-field="_aliases"]');
+            let updatedAliases = entity.aliases || [];
+            if ($aliasInput.length) {
+                const aliasStr = $aliasInput.val() || '';
+                updatedAliases = aliasStr.split(',').map(a => a.trim()).filter(Boolean);
+            }
+
             // Handle name change (requires ID change)
             if (updatedName !== entity.name && category !== 'mainCharacter') {
                 const newId = generateId(updatedName);
@@ -991,6 +1042,7 @@ function exitEditMode(save) {
                     ...entity,
                     id: newId,
                     name: updatedName,
+                    aliases: updatedAliases,
                     tier: updatedTier,
                     importance: updatedImportance,
                     baseScore: updatedImportance,
@@ -1000,6 +1052,7 @@ function exitEditMode(save) {
             } else {
                 memoryStore.updateEntity(category, entityId, {
                     name: updatedName,
+                    aliases: updatedAliases,
                     tier: updatedTier,
                     importance: updatedImportance,
                     baseScore: updatedImportance,
@@ -1025,10 +1078,14 @@ function exitEditMode(save) {
 
 function readInlineFields($card, category, existingFields) {
     const defs = FIELD_DEFS[category] || [];
+    const currentTurn = memoryStore.getTurnCounter();
     // Start from a clone of existing fields to preserve any fields we don't have defs for
     const fields = JSON.parse(JSON.stringify(existingFields || {}));
 
     for (const def of defs) {
+        // Skip meta fields (handled separately)
+        if (def.meta) continue;
+
         const $input = $card.find(`[data-edit-field="${def.key}"]`);
         if (!$input.length) continue;
 
@@ -1041,7 +1098,12 @@ function readInlineFields($card, category, existingFields) {
                 value = $input.val() || '';
         }
 
-        fields[def.key] = value;
+        // Wrap string values with provenance
+        if (typeof value === 'string') {
+            fields[def.key] = wrapField(value, currentTurn);
+        } else {
+            fields[def.key] = value;
+        }
     }
 
     return fields;
@@ -1155,12 +1217,32 @@ async function triggerExtraction(context) {
         }
 
         memoryStore.setLastExtractionTurn(memoryStore.getTurnCounter());
+
+        // Enforce max beats cap
+        const maxBeats = getSettings().maxBeats || 200;
+        memoryStore.enforceMaxBeats(maxBeats);
+
         saveMemoryState();
         injectMemoryPrompt();
         renderMemoryUI();
 
         debugLog('Extraction complete');
         toastr.success(tt`Memory updated`, 'RP Memory', { timeOut: 2000 });
+
+        // Check if reflection should fire (async, non-blocking)
+        if (reflectionEngine && reflectionEngine.shouldReflect()) {
+            reflectionEngine.reflect().then(() => {
+                // Also compress beats if needed
+                return reflectionEngine.compress();
+            }).then(() => {
+                saveMemoryState();
+                injectMemoryPrompt();
+                renderMemoryUI();
+                debugLog('Reflection complete');
+            }).catch(err => {
+                console.warn('[RP Memory] Reflection/compression failed:', err.message);
+            });
+        }
     } catch (err) {
         if (err?.name === 'AbortError') {
             debugLog('Extraction aborted by user');
@@ -1252,6 +1334,11 @@ async function forceExtract() {
         }
 
         memoryStore.setLastExtractionTurn(memoryStore.getTurnCounter());
+
+        // Enforce max beats cap
+        const maxBeats = s.maxBeats || 200;
+        memoryStore.enforceMaxBeats(maxBeats);
+
         saveMemoryState();
         injectMemoryPrompt();
         renderMemoryUI();
@@ -1259,6 +1346,20 @@ async function forceExtract() {
         const label = extractedCount > 0 ? tt`Last ${extractedCount} exchanges extracted` : tt`Full history extracted`;
         debugLog('Manual extraction complete');
         toastr.success(label, 'RP Memory', { timeOut: 3000 });
+
+        // Check if reflection should fire (async, non-blocking)
+        if (reflectionEngine && reflectionEngine.shouldReflect()) {
+            reflectionEngine.reflect().then(() => {
+                return reflectionEngine.compress();
+            }).then(() => {
+                saveMemoryState();
+                injectMemoryPrompt();
+                renderMemoryUI();
+                debugLog('Reflection complete (manual extraction)');
+            }).catch(err => {
+                console.warn('[RP Memory] Reflection/compression failed:', err.message);
+            });
+        }
     } catch (err) {
         if (err?.name === 'AbortError') {
             debugLog('Manual extraction aborted by user');
@@ -1487,6 +1588,8 @@ const CATEGORY_DEFS = [
     { key: 'locations', icon: 'fa-map-location-dot', labelKey: 'Loc' },
     { key: 'goals', icon: 'fa-bullseye', labelKey: 'Goals' },
     { key: 'events', icon: 'fa-timeline', labelKey: 'Events' },
+    { key: 'beats', icon: 'fa-bolt', labelKey: 'Beats' },
+    { key: 'reflections', icon: 'fa-lightbulb', labelKey: 'Reflect' },
 ];
 
 function getCategoryLabel(key) {
@@ -1496,6 +1599,8 @@ function getCategoryLabel(key) {
         locations: tt`Locations`,
         goals: tt`Goals / Tasks`,
         events: tt`Events`,
+        beats: tt`Story Beats`,
+        reflections: tt`Reflections`,
     };
     return labels[key] || key;
 }
@@ -1666,6 +1771,36 @@ function renderPanelCards(category) {
     const title = getCategoryLabel(category);
     $panel.append(`<div class="rp-mem-data-panel-title">${escapeHtml(title)}</div>`);
 
+    // Special handling for beats (read-only timeline)
+    if (category === 'beats') {
+        const beats = memoryStore.getRecentBeats(50);
+        if (beats.length === 0) {
+            $panel.append(`<div class="rp-mem-empty-state">${escapeHtml(tt`No beats recorded yet`)}</div>`);
+        } else {
+            const $grid = $('<div class="rp-mem-card-grid"></div>');
+            for (const beat of beats) {
+                $grid.append(buildBeatCardHtml(beat));
+            }
+            $panel.append($grid);
+        }
+        return;
+    }
+
+    // Special handling for reflections (read-only)
+    if (category === 'reflections') {
+        const reflections = memoryStore.getRecentReflections(20);
+        if (reflections.length === 0) {
+            $panel.append(`<div class="rp-mem-empty-state">${escapeHtml(tt`No reflections yet`)}</div>`);
+        } else {
+            const $grid = $('<div class="rp-mem-card-grid"></div>');
+            for (const ref of reflections) {
+                $grid.append(buildReflectionCardHtml(ref));
+            }
+            $panel.append($grid);
+        }
+        return;
+    }
+
     const entities = memoryStore.getAllEntities(category);
     const entityList = Object.values(entities);
 
@@ -1701,7 +1836,7 @@ function buildCardHtml(category, entity) {
         for (const [key, value] of Object.entries(entity.fields)) {
             if (value === null || value === undefined || value === '') continue;
             if (Array.isArray(value) && value.length === 0) continue;
-            if (typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 0) continue;
+            if (typeof value === 'object' && !Array.isArray(value) && !('value' in value) && Object.keys(value).length === 0) continue;
 
             const rawLabel = key.charAt(0).toUpperCase() + key.slice(1).replace(/([A-Z])/g, ' $1');
             const label = tl(rawLabel);
@@ -1725,6 +1860,54 @@ function buildCardHtml(category, entity) {
         </div>
         <div class="rp-mem-card-body">
             ${gridItems || `<span class="rp-mem-empty-state" style="padding:4px;font-size:0.8em;">${escapeHtml(tt`No details`)}</span>`}
+        </div>
+    </div>`;
+}
+
+function buildBeatCardHtml(beat) {
+    const typeLabels = {
+        conflict: '⚔️', discovery: '🔍', relationship: '💬',
+        decision: '⚖️', transition: '➡️', revelation: '💡', consequence: '🔗',
+    };
+    const typeIcon = typeLabels[beat.type] || '📝';
+    const participants = (beat.participants || []).join(', ');
+    const compressed = beat.compressed ? ' <span style="opacity:0.5">[summarized]</span>' : '';
+
+    return `
+    <div class="rp-mem-card" style="cursor:default;">
+        <div class="rp-mem-card-header">
+            <span class="rp-mem-card-name">${typeIcon} ${escapeHtml(tt`Turn`)} ${beat.storyTurn}${compressed}</span>
+            <span class="rp-mem-card-importance">${beat.importance}</span>
+        </div>
+        <div class="rp-mem-card-body">
+            <div class="rp-mem-grid-item">
+                <div class="rp-mem-grid-item-value" title="${escapeHtml(beat.text)}">${escapeHtml(beat.text)}</div>
+            </div>
+            ${participants ? `<div class="rp-mem-grid-item"><div class="rp-mem-grid-item-label">${escapeHtml(tt`Participants`)}</div><div class="rp-mem-grid-item-value">${escapeHtml(participants)}</div></div>` : ''}
+        </div>
+    </div>`;
+}
+
+function buildReflectionCardHtml(ref) {
+    const typeLabels = {
+        relationship: '💬', plot_thread: '📖',
+        character_arc: '🎭', world_state: '🌍',
+    };
+    const typeIcon = typeLabels[ref.type] || '💡';
+    const participants = (ref.participants || []).join(', ');
+
+    return `
+    <div class="rp-mem-card" style="cursor:default;">
+        <div class="rp-mem-card-header">
+            <span class="rp-mem-card-name">${typeIcon} ${escapeHtml(ref.type || 'observation')}</span>
+            <span class="rp-mem-card-tier">${escapeHtml(tt`Turn`)} ${ref.storyTurn}</span>
+            <span class="rp-mem-card-importance">${ref.importance}</span>
+        </div>
+        <div class="rp-mem-card-body">
+            <div class="rp-mem-grid-item">
+                <div class="rp-mem-grid-item-value" title="${escapeHtml(ref.text)}">${escapeHtml(ref.text)}</div>
+            </div>
+            ${participants ? `<div class="rp-mem-grid-item"><div class="rp-mem-grid-item-label">${escapeHtml(tt`Participants`)}</div><div class="rp-mem-grid-item-value">${escapeHtml(participants)}</div></div>` : ''}
         </div>
     </div>`;
 }
@@ -1756,31 +1939,39 @@ function openCardEditOverlay(category, entityId) {
     // Build field inputs
     let fieldInputs = '';
     for (const def of defs) {
-        const rawValue = fields[def.key];
         let inputHtml = '';
 
-        switch (def.type) {
-            case 'textarea': {
-                const val = displayStr(rawValue);
-                inputHtml = `<textarea data-edit-field="${def.key}">${escapeHtml(val)}</textarea>`;
-                break;
-            }
-            case 'text': {
-                const val = displayStr(rawValue);
-                inputHtml = `<input type="text" data-edit-field="${def.key}" value="${escapeHtml(val)}" />`;
-                break;
-            }
-            case 'number': {
-                const val = rawValue || 0;
-                inputHtml = `<input type="number" data-edit-field="${def.key}" value="${val}" />`;
-                break;
-            }
-            case 'select': {
-                const opts = (def.options || []).map(o =>
-                    `<option value="${o.value}" ${rawValue === o.value ? 'selected' : ''}>${escapeHtml(tl(o.label))}</option>`,
-                ).join('');
-                inputHtml = `<select data-edit-field="${def.key}">${opts}</select>`;
-                break;
+        // Handle meta fields (like aliases) that aren't in entity.fields
+        if (def.meta && def.key === '_aliases') {
+            const aliasVal = (entity.aliases || []).join(', ');
+            inputHtml = `<input type="text" data-edit-field="${def.key}" value="${escapeHtml(aliasVal)}" />`;
+        } else {
+            const rawValue = fields[def.key];
+
+            switch (def.type) {
+                case 'textarea': {
+                    const val = displayStr(rawValue);
+                    inputHtml = `<textarea data-edit-field="${def.key}">${escapeHtml(val)}</textarea>`;
+                    break;
+                }
+                case 'text': {
+                    const val = displayStr(rawValue);
+                    inputHtml = `<input type="text" data-edit-field="${def.key}" value="${escapeHtml(val)}" />`;
+                    break;
+                }
+                case 'number': {
+                    const val = displayStr(rawValue) || 0;
+                    inputHtml = `<input type="number" data-edit-field="${def.key}" value="${val}" />`;
+                    break;
+                }
+                case 'select': {
+                    const displayVal = displayStr(rawValue);
+                    const opts = (def.options || []).map(o =>
+                        `<option value="${o.value}" ${displayVal === o.value ? 'selected' : ''}>${escapeHtml(tl(o.label))}</option>`,
+                    ).join('');
+                    inputHtml = `<select data-edit-field="${def.key}">${opts}</select>`;
+                    break;
+                }
             }
         }
 
@@ -1897,6 +2088,14 @@ function saveOverlayEdits() {
     const updatedImportance = parseFloat($dialog.find('.rp-mem-overlay-importance').val()) || entity.importance;
     const updatedFields = readOverlayFields($dialog, category, entity.fields);
 
+    // Read aliases from meta field
+    const $aliasInput = $dialog.find('[data-edit-field="_aliases"]');
+    let updatedAliases = entity.aliases || [];
+    if ($aliasInput.length) {
+        const aliasStr = $aliasInput.val() || '';
+        updatedAliases = aliasStr.split(',').map(a => a.trim()).filter(Boolean);
+    }
+
     // Handle name change (requires ID change)
     if (updatedName !== entity.name && category !== 'mainCharacter') {
         const newId = generateId(updatedName);
@@ -1905,6 +2104,7 @@ function saveOverlayEdits() {
             ...entity,
             id: newId,
             name: updatedName,
+            aliases: updatedAliases,
             tier: updatedTier,
             importance: updatedImportance,
             baseScore: updatedImportance,
@@ -1914,6 +2114,7 @@ function saveOverlayEdits() {
     } else {
         memoryStore.updateEntity(category, entityId, {
             name: updatedName,
+            aliases: updatedAliases,
             tier: updatedTier,
             importance: updatedImportance,
             baseScore: updatedImportance,
@@ -1936,9 +2137,13 @@ function saveOverlayEdits() {
 
 function readOverlayFields($dialog, category, existingFields) {
     const defs = FIELD_DEFS[category] || [];
+    const currentTurn = memoryStore.getTurnCounter();
     const fields = JSON.parse(JSON.stringify(existingFields || {}));
 
     for (const def of defs) {
+        // Skip meta fields (handled separately)
+        if (def.meta) continue;
+
         const $input = $dialog.find(`[data-edit-field="${def.key}"]`);
         if (!$input.length) continue;
 
@@ -1951,7 +2156,12 @@ function readOverlayFields($dialog, category, existingFields) {
                 value = $input.val() || '';
         }
 
-        fields[def.key] = value;
+        // Wrap string values with provenance
+        if (typeof value === 'string') {
+            fields[def.key] = wrapField(value, currentTurn);
+        } else {
+            fields[def.key] = value;
+        }
     }
 
     return fields;
@@ -2012,6 +2222,7 @@ jQuery(async function () {
         decayEngine = new DecayEngine(() => getSettings());
         pipeline = new ExtractionPipeline(apiClient, memoryStore, () => getSettings(), decayEngine, getPromptLanguage);
         embeddingService = new EmbeddingService(apiClient, () => getSettings());
+        reflectionEngine = new ReflectionEngine(apiClient, memoryStore, () => getSettings(), getPromptLanguage);
 
         // Sync UI
         syncUIFromSettings();

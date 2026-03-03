@@ -1,7 +1,17 @@
 import { ExtractionPrompts, TAVERNDB_TABLE_PROMPT_FEW_SHOT } from './ExtractionPrompts.js';
-import { generateId } from './Utils.js';
+import { generateId, unwrapField, wrapField, updateFieldProvenance } from './Utils.js';
 
 const CATEGORIES = ['characters', 'locations', 'mainCharacter', 'goals', 'events'];
+
+/** Patterns that look like prompt injection attempts */
+const INJECTION_PATTERNS = [
+    /ignore\s+(all\s+)?previous/i,
+    /system\s*prompt/i,
+    /you\s+are\s+now/i,
+    /follow\s+these\s+(rules|instructions)/i,
+    /disregard\s+(all\s+)?(prior|previous)/i,
+    /override\s+(all\s+)?instructions/i,
+];
 
 export class ExtractionPipeline {
     constructor(apiClient, memoryStore, getSettings, decayEngine = null, getLang = null) {
@@ -19,20 +29,18 @@ export class ExtractionPipeline {
     abort() {
         if (this._abortController) {
             this._abortController.abort();
-            // Don't null out here — let the finally blocks in extract/extractRange/extractFullHistory handle cleanup
         }
     }
 
     /**
-     * Run extraction on recent messages. Single unified API call for all 5 categories.
+     * Run extraction on recent messages. Single unified API call for all categories.
      * Merges results into memoryStore.
      */
     async extract(context) {
         const settings = this.getSettings();
         const chat = context.chat;
-        const CONTEXT_PADDING = 5; // extra exchanges for context
+        const CONTEXT_PADDING = 5;
 
-        // Step 1: Gather target messages + context padding
         const targetCount = settings.messagesPerExtraction * 2;
         const totalCount = targetCount + (CONTEXT_PADDING * 2);
         const allRecent = this._getRecentMessages(chat, totalCount);
@@ -42,24 +50,18 @@ export class ExtractionPipeline {
             return;
         }
 
-        // Split into context (older) and target (newer) messages
         const splitPoint = Math.max(0, allRecent.length - targetCount);
         const contextMessages = allRecent.slice(0, splitPoint);
         const targetMessages = allRecent.slice(splitPoint);
 
-        // Step 2: Format both sections
         const formattedTarget = this._formatMessages(targetMessages, context.name1, context.name2, settings);
         const formattedContext = contextMessages.length > 0
             ? this._formatMessages(contextMessages, context.name1, context.name2, settings)
             : '';
 
-        // Step 3: Build Tier 1 pinned state
         const currentState = this._buildExtractionState();
-
-        // Step 4: Character system prompt
         const scenarioContext = this._buildScenarioContext(context);
 
-        // Step 5: Single unified extraction call (with abort support)
         this._abortController = new AbortController();
         let result;
         try {
@@ -84,6 +86,13 @@ export class ExtractionPipeline {
                     }
                 }
             }
+
+            // Process beats (Layer 2)
+            if (Array.isArray(result.beats) && result.beats.length > 0) {
+                this._processBeats(result.beats);
+                mergeCount++;
+            }
+
             if (settings.debugMode) {
                 console.debug(`[RP Memory] Extraction complete: ${mergeCount} categories had updates`);
             }
@@ -94,9 +103,6 @@ export class ExtractionPipeline {
 
     /**
      * Extract a specific number of exchanges from the end of chat.
-     * Used for manual extraction with a configurable depth.
-     * @param {object} context - SillyTavern context
-     * @param {number} exchanges - Number of exchanges to extract
      */
     async extractRange(context, exchanges) {
         const settings = this.getSettings();
@@ -149,20 +155,21 @@ export class ExtractionPipeline {
                     }
                 }
             }
+
+            // Process beats
+            if (Array.isArray(result.beats) && result.beats.length > 0) {
+                this._processBeats(result.beats);
+            }
         }
     }
 
     /**
      * Extract from the ENTIRE chat history in sequential chunks (oldest-first).
-     * Each chunk sees the accumulated memory state from prior chunks.
-     * @param {object} context - SillyTavern context
-     * @param {function} [onProgress] - Callback: (chunkIndex, totalChunks) => void
      */
     async extractFullHistory(context, onProgress = null) {
         const settings = this.getSettings();
         const chat = context.chat;
 
-        // Get ALL non-system messages
         const allMessages = this._getRecentMessages(chat, chat.length);
 
         if (allMessages.length === 0) {
@@ -170,7 +177,6 @@ export class ExtractionPipeline {
             return;
         }
 
-        // Chunk size: use the messagesPerExtraction setting (in exchanges × 2)
         const chunkSize = settings.messagesPerExtraction * 2;
         const chunks = [];
         for (let i = 0; i < allMessages.length; i += chunkSize) {
@@ -181,7 +187,6 @@ export class ExtractionPipeline {
             console.debug(`[RP Memory] Full history: ${allMessages.length} messages in ${chunks.length} chunks`);
         }
 
-        // Build scenario context once — same character/world for all chunks
         const scenarioContext = this._buildScenarioContext(context);
 
         this._abortController = new AbortController();
@@ -191,14 +196,11 @@ export class ExtractionPipeline {
                 if (onProgress) onProgress(ci + 1, chunks.length);
 
                 const formattedTarget = this._formatMessages(chunks[ci], context.name1, context.name2, settings);
-                // Use previous chunk as context padding (if available)
                 const formattedContext = ci > 0
                     ? this._formatMessages(chunks[ci - 1], context.name1, context.name2, settings)
                     : '';
-                // Fresh Tier 1 state each chunk — includes results from prior chunks
                 const currentState = this._buildExtractionState();
 
-                // _extractAll throws AbortError if aborted — breaks the loop naturally
                 const result = await this._extractAll(formattedTarget, currentState, context, scenarioContext, formattedContext);
 
                 if (result) {
@@ -215,6 +217,11 @@ export class ExtractionPipeline {
                             }
                         }
                     }
+
+                    // Process beats
+                    if (Array.isArray(result.beats) && result.beats.length > 0) {
+                        this._processBeats(result.beats);
+                    }
                 }
             }
         } finally {
@@ -224,12 +231,10 @@ export class ExtractionPipeline {
 
     /**
      * Build scenario context for extraction.
-     * Only the character's system prompt — just enough for the LLM to understand the setting.
      */
     _buildScenarioContext(context) {
         const parts = [];
 
-        // Character card system prompt
         if (context.getCharacterCardFields) {
             try {
                 const fields = context.getCharacterCardFields();
@@ -239,7 +244,6 @@ export class ExtractionPipeline {
             }
         }
 
-        // Global ST system prompt (if different from character card)
         try {
             const globalSP = context.powerUserSettings?.sysprompt;
             if (globalSP?.enabled && globalSP?.content) {
@@ -255,15 +259,22 @@ export class ExtractionPipeline {
 
     /**
      * Build extraction state: Tier 1 (pinned) entities ONLY.
-     * Extraction is not conversation — it just needs pinned entities to avoid
-     * conflicts and duplicates. Everything else is unnecessary context bloat.
+     * Unwraps provenance fields to plain strings for the LLM prompt.
      */
     _buildExtractionState() {
-        const stripEntity = (entity) => ({
-            name: entity.name,
-            importance: entity.importance,
-            fields: entity.fields || {},
-        });
+        const stripEntity = (entity) => {
+            const plainFields = {};
+            if (entity.fields) {
+                for (const [key, value] of Object.entries(entity.fields)) {
+                    plainFields[key] = unwrapField(value);
+                }
+            }
+            return {
+                name: entity.name,
+                importance: entity.importance,
+                fields: plainFields,
+            };
+        };
 
         const state = {
             characters: {},
@@ -273,31 +284,26 @@ export class ExtractionPipeline {
             events: {},
         };
 
-        // Main Character — always Tier 1
         const mc = this.memoryStore.getMainCharacter();
         if (mc) {
             state.mainCharacter = stripEntity(mc);
         }
 
-        // Tier 1 characters only
         const allChars = this.memoryStore.getAllEntities('characters');
         for (const [id, entity] of Object.entries(allChars)) {
             if (entity.tier === 1) state.characters[id] = stripEntity(entity);
         }
 
-        // Tier 1 locations only
         const allLocs = this.memoryStore.getAllEntities('locations');
         for (const [id, entity] of Object.entries(allLocs)) {
             if (entity.tier === 1) state.locations[id] = stripEntity(entity);
         }
 
-        // Tier 1 goals only
         const allGoals = this.memoryStore.getAllEntities('goals');
         for (const [id, entity] of Object.entries(allGoals)) {
             if (entity.tier === 1) state.goals[id] = stripEntity(entity);
         }
 
-        // Tier 1 events only
         const allEvents = this.memoryStore.getAllEntities('events');
         for (const [id, entity] of Object.entries(allEvents)) {
             if (entity.tier === 1) state.events[id] = stripEntity(entity);
@@ -326,7 +332,6 @@ export class ExtractionPipeline {
 
     /**
      * Format messages for extraction prompt.
-     * User messages get [HIGH PRIORITY] marker.
      */
     _formatMessages(messages, userName, charName, settings) {
         return messages.map(msg => {
@@ -367,7 +372,7 @@ export class ExtractionPipeline {
         } catch (error) {
             if (error.name === 'AbortError') {
                 console.debug('[RP Memory] Extraction aborted by user');
-                throw error; // Propagate so callers can stop immediately
+                throw error;
             }
             console.warn('[RP Memory] Unified extraction call failed:', error);
             return null;
@@ -375,12 +380,11 @@ export class ExtractionPipeline {
     }
 
     /**
-     * Parse unified JSON response containing all 5 category arrays.
+     * Parse unified JSON response containing all category arrays + beats.
      */
     _parseUnifiedResponse(responseText) {
         let cleaned = responseText.trim();
 
-        // Strip markdown code fences
         if (cleaned.startsWith('```json')) {
             cleaned = cleaned.slice(7);
         } else if (cleaned.startsWith('```')) {
@@ -400,7 +404,8 @@ export class ExtractionPipeline {
             }
 
             // Validate: at least one known category key with an array value
-            const hasValidCategory = CATEGORIES.some(
+            const allKeys = [...CATEGORIES, 'beats'];
+            const hasValidCategory = allKeys.some(
                 cat => Array.isArray(parsed[cat]),
             );
             if (!hasValidCategory) {
@@ -413,8 +418,12 @@ export class ExtractionPipeline {
                 if (!Array.isArray(parsed[cat])) {
                     parsed[cat] = [];
                 }
-                // Normalize entities: if fields aren't nested under "fields", move them there
                 parsed[cat] = parsed[cat].map(entity => this._normalizeEntity(entity));
+            }
+
+            // Ensure beats is an array
+            if (!Array.isArray(parsed.beats)) {
+                parsed.beats = [];
             }
 
             return parsed;
@@ -429,24 +438,20 @@ export class ExtractionPipeline {
 
     /**
      * Normalize an entity: if field values are at the top level instead of nested
-     * under "fields", move them there. LLMs sometimes ignore the nesting instruction.
+     * under "fields", move them there.
      */
     _normalizeEntity(entity) {
         if (!entity || typeof entity !== 'object') return entity;
 
-        // Known structural keys that belong at entity top level
         const STRUCTURAL_KEYS = new Set(['id', 'name', 'importance', 'fields']);
 
-        // If entity already has a populated fields object, it's fine
         if (entity.fields && typeof entity.fields === 'object' && Object.keys(entity.fields).length > 0) {
             return entity;
         }
 
-        // Check if there are extra keys beyond structural ones (i.e. field values at top level)
         const extraKeys = Object.keys(entity).filter(k => !STRUCTURAL_KEYS.has(k));
         if (extraKeys.length === 0) return entity;
 
-        // Move extra keys into fields
         const fields = entity.fields && typeof entity.fields === 'object' ? { ...entity.fields } : {};
         for (const key of extraKeys) {
             fields[key] = entity[key];
@@ -463,7 +468,6 @@ export class ExtractionPipeline {
     _parseResponse(responseText) {
         let cleaned = responseText.trim();
 
-        // Strip markdown code fences
         if (cleaned.startsWith('```json')) {
             cleaned = cleaned.slice(7);
         } else if (cleaned.startsWith('```')) {
@@ -477,13 +481,11 @@ export class ExtractionPipeline {
         try {
             const parsed = JSON.parse(cleaned);
 
-            // Validate basic structure
             if (!parsed || !Array.isArray(parsed.entities)) {
                 console.warn('[RP Memory] Invalid extraction response structure');
                 return null;
             }
 
-            // Filter out empty entities array
             if (parsed.entities.length === 0) {
                 return null;
             }
@@ -499,6 +501,63 @@ export class ExtractionPipeline {
     }
 
     /**
+     * Sanitize a field value string, stripping potential prompt injection patterns.
+     */
+    _sanitizeFieldValue(value) {
+        if (typeof value !== 'string') return value;
+        let sanitized = value;
+        for (const pattern of INJECTION_PATTERNS) {
+            if (pattern.test(sanitized)) {
+                console.warn(`[RP Memory] Stripped potential injection from field value: "${sanitized.slice(0, 80)}..."`);
+                sanitized = sanitized.replace(pattern, '[REMOVED]');
+            }
+        }
+        return sanitized;
+    }
+
+    /**
+     * Process extracted beats and store them.
+     */
+    _processBeats(beats) {
+        const currentTurn = this.memoryStore.getTurnCounter();
+
+        for (const beat of beats) {
+            if (!beat.text) continue;
+
+            const sanitizedText = this._sanitizeFieldValue(beat.text);
+
+            const beatObj = {
+                id: `beat-${currentTurn}-${this._shortHash(sanitizedText)}`,
+                text: sanitizedText,
+                participants: Array.isArray(beat.participants) ? beat.participants : [],
+                sourceTurns: [currentTurn],
+                storyTurn: currentTurn,
+                importance: beat.importance || 5,
+                type: beat.type || 'transition',
+            };
+
+            this.memoryStore.addBeat(beatObj);
+        }
+
+        if (this.getSettings().debugMode) {
+            console.debug(`[RP Memory] ${beats.length} beats extracted at turn ${currentTurn}`);
+        }
+    }
+
+    /**
+     * Generate a short hash from text for beat IDs.
+     */
+    _shortHash(text) {
+        let hash = 0;
+        for (let i = 0; i < text.length; i++) {
+            const char = text.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash; // Convert to 32bit integer
+        }
+        return Math.abs(hash).toString(36).slice(0, 6);
+    }
+
+    /**
      * Merge extraction result into memory store.
      */
     _mergeResult(category, extractedData) {
@@ -511,7 +570,18 @@ export class ExtractionPipeline {
 
             // Flatten any arrays/objects from LLM output to strings
             if (entity.fields) {
-                entity.fields = this._flattenFields(entity.fields);
+                entity.fields = this._flattenFields(entity.fields, currentTurn);
+            }
+
+            // Sanitize field values
+            if (entity.fields) {
+                for (const [key, value] of Object.entries(entity.fields)) {
+                    if (value && typeof value === 'object' && 'value' in value) {
+                        value.value = this._sanitizeFieldValue(value.value);
+                    } else if (typeof value === 'string') {
+                        entity.fields[key] = this._sanitizeFieldValue(value);
+                    }
+                }
             }
 
             const entityId = entity.id || generateId(entity.name);
@@ -522,24 +592,39 @@ export class ExtractionPipeline {
                 continue;
             }
 
-            const existing = this.memoryStore.getEntity(category, entityId);
+            let existing = this.memoryStore.getEntity(category, entityId);
+
+            // If not found by ID, try alias-based resolution
+            if (!existing) {
+                existing = this.memoryStore.findEntityByAlias(category, entity.name || entityId);
+                if (existing) {
+                    // Add the new name as an alias if it's different
+                    const newName = (entity.name || '').trim();
+                    if (newName && newName.toLowerCase() !== existing.name.toLowerCase()) {
+                        if (!existing.aliases) existing.aliases = [];
+                        if (!existing.aliases.some(a => a.toLowerCase() === newName.toLowerCase())) {
+                            existing.aliases.push(newName);
+                        }
+                    }
+                }
+            }
 
             if (existing) {
                 // Update existing entity
                 const conflicts = this._detectConflicts(existing, entity, currentTurn);
-                const mergedFields = this._mergeFields(existing.fields, entity.fields);
+                const mergedFields = this._mergeFields(existing.fields, entity.fields, currentTurn);
                 const newImportance = entity.importance ?? existing.importance;
 
-                this.memoryStore.updateEntity(category, entityId, {
+                this.memoryStore.updateEntity(category, existing.id, {
                     fields: mergedFields,
                     conflicts: [...(existing.conflicts || []), ...conflicts],
                 });
 
                 // Reinforce: reset decay, restore score, promote Tier 3 → 2 if applicable
                 if (this.decayEngine) {
-                    this.decayEngine.reinforce(this.memoryStore, category, entityId, currentTurn, newImportance);
+                    this.decayEngine.reinforce(this.memoryStore, category, existing.id, currentTurn, newImportance);
                 } else {
-                    this.memoryStore.updateEntity(category, entityId, {
+                    this.memoryStore.updateEntity(category, existing.id, {
                         importance: newImportance,
                         baseScore: newImportance,
                         lastMentionedTurn: currentTurn,
@@ -552,6 +637,7 @@ export class ExtractionPipeline {
                 this.memoryStore.addEntity(category, {
                     id: entityId,
                     name: entity.name || entityId,
+                    aliases: [],
                     tier,
                     importance: entity.importance || 5,
                     baseScore: entity.importance || 5,
@@ -573,7 +659,7 @@ export class ExtractionPipeline {
 
         if (existing) {
             const conflicts = this._detectConflicts(existing, entity, currentTurn);
-            const mergedFields = this._mergeFields(existing.fields, entity.fields);
+            const mergedFields = this._mergeFields(existing.fields, entity.fields, currentTurn);
 
             this.memoryStore.updateEntity('mainCharacter', existing.id, {
                 name: entity.name || existing.name,
@@ -582,10 +668,10 @@ export class ExtractionPipeline {
                 conflicts: [...(existing.conflicts || []), ...conflicts],
             });
         } else {
-            // First time seeing MC
             this.memoryStore.addEntity('mainCharacter', {
                 id: 'main-character',
                 name: entity.name || 'Main Character',
+                aliases: [],
                 tier: 1,
                 importance: 10,
                 baseScore: 10,
@@ -599,46 +685,51 @@ export class ExtractionPipeline {
     }
 
     /**
-     * Flatten any arrays or objects from LLM output into plain strings.
-     * Ensures all field values are stored as strings (or numbers for 'turn').
+     * Flatten any arrays or objects from LLM output into provenance-wrapped strings.
      */
-    _flattenFields(fields) {
+    _flattenFields(fields, currentTurn) {
         const flat = {};
 
         for (const [key, value] of Object.entries(fields)) {
             if (value === null || value === undefined) continue;
 
+            let stringValue;
             if (Array.isArray(value)) {
-                // Array of objects (e.g. old-format relationships [{target, nature}])
                 if (value.length > 0 && typeof value[0] === 'object' && value[0] !== null) {
-                    flat[key] = value.map(v => v.target ? `${v.target}: ${v.nature || ''}` : JSON.stringify(v)).join(', ');
+                    stringValue = value.map(v => v.target ? `${v.target}: ${v.nature || ''}` : JSON.stringify(v)).join(', ');
                 } else {
-                    flat[key] = value.join(', ');
+                    stringValue = value.join(', ');
                 }
             } else if (typeof value === 'object') {
-                // Nested object (e.g. old-format status {health, conditions, buffs})
-                // Promote children to top-level
+                // Check if it's already a provenance object
+                if ('value' in value && 'sourceTurns' in value) {
+                    flat[key] = value;
+                    continue;
+                }
+                // Nested object — promote children
                 for (const [subKey, subVal] of Object.entries(value)) {
                     if (subVal === null || subVal === undefined) continue;
                     if (Array.isArray(subVal)) {
-                        flat[subKey] = subVal.join(', ');
+                        flat[subKey] = wrapField(subVal.join(', '), currentTurn);
                     } else {
-                        flat[subKey] = String(subVal);
+                        flat[subKey] = wrapField(String(subVal), currentTurn);
                     }
                 }
+                continue;
             } else {
-                flat[key] = value;
+                stringValue = value;
             }
+
+            flat[key] = wrapField(String(stringValue), currentTurn);
         }
 
         return flat;
     }
 
     /**
-     * Merge new fields into existing fields.
-     * Only overwrites fields that are present in the new data.
+     * Merge new fields into existing fields with provenance tracking.
      */
-    _mergeFields(existing, updated) {
+    _mergeFields(existing, updated, currentTurn) {
         if (!updated) return { ...existing };
         if (!existing) return { ...updated };
 
@@ -646,7 +737,20 @@ export class ExtractionPipeline {
 
         for (const [key, newVal] of Object.entries(updated)) {
             if (newVal === null || newVal === undefined) continue;
-            merged[key] = newVal;
+
+            const existingVal = merged[key];
+
+            if (existingVal && typeof existingVal === 'object' && 'value' in existingVal) {
+                // Existing is provenance-wrapped
+                const newPlain = (typeof newVal === 'object' && 'value' in newVal)
+                    ? newVal.value : String(newVal);
+                if (newPlain && newPlain !== existingVal.value) {
+                    merged[key] = updateFieldProvenance(existingVal, newPlain, currentTurn);
+                }
+            } else {
+                // Existing is plain or doesn't exist — just set new value
+                merged[key] = newVal;
+            }
         }
 
         return merged;
@@ -654,6 +758,7 @@ export class ExtractionPipeline {
 
     /**
      * Detect field-level conflicts between existing and updated entity.
+     * Handles provenance-wrapped fields by unwrapping for comparison.
      */
     _detectConflicts(existing, updated, turn) {
         const conflicts = [];
@@ -665,17 +770,18 @@ export class ExtractionPipeline {
             const oldVal = existing.fields[key];
             if (oldVal === undefined || oldVal === null || oldVal === '') continue;
 
-            // Skip arrays and objects for conflict detection (too noisy)
-            if (typeof oldVal === 'object' || typeof newVal === 'object') continue;
+            // Unwrap provenance for comparison
+            const oldPlain = unwrapField(oldVal);
+            const newPlain = unwrapField(newVal);
 
-            // Only flag if both are strings and they differ
-            if (typeof oldVal === 'string' && typeof newVal === 'string' &&
-                oldVal.trim() !== '' && newVal.trim() !== '' &&
-                oldVal !== newVal) {
+            if (!oldPlain || !newPlain) continue;
+            if (typeof oldPlain !== 'string' || typeof newPlain !== 'string') continue;
+
+            if (oldPlain.trim() !== '' && newPlain.trim() !== '' && oldPlain !== newPlain) {
                 conflicts.push({
                     field: key,
-                    oldValue: oldVal,
-                    newValue: newVal,
+                    oldValue: oldPlain,
+                    newValue: newPlain,
                     detectedTurn: turn,
                     resolved: false,
                 });
@@ -689,8 +795,8 @@ export class ExtractionPipeline {
      * Assign tier based on importance score.
      */
     _assignTier(importance) {
-        if (importance >= 8) return 1;  // Pinned
-        if (importance >= 4) return 2;  // Active
-        return 3;                        // Archived
+        if (importance >= 8) return 1;
+        if (importance >= 4) return 2;
+        return 3;
     }
 }

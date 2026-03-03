@@ -31,6 +31,34 @@ export function deepClone(obj) {
 }
 
 /**
+ * Unwrap a field value that may be a provenance object or a plain string.
+ * Provenance objects have the shape { value, sourceTurns, lastUpdated }.
+ */
+export function unwrapField(field) {
+    if (field && typeof field === 'object' && 'value' in field) return field.value;
+    return field ?? '';
+}
+
+/**
+ * Wrap a plain value into a provenance object.
+ */
+export function wrapField(value, turn) {
+    return { value: String(value), sourceTurns: [turn], lastUpdated: turn };
+}
+
+/**
+ * Update an existing provenance-wrapped field with a new value,
+ * appending the source turn. Keeps last 5 source turns.
+ */
+export function updateFieldProvenance(existing, newValue, turn) {
+    if (existing && typeof existing === 'object' && 'value' in existing) {
+        const turns = [...(existing.sourceTurns || []), turn].slice(-5);
+        return { value: String(newValue), sourceTurns: turns, lastUpdated: turn };
+    }
+    return wrapField(newValue, turn);
+}
+
+/**
  * Create an empty entity with default fields for a given category.
  */
 export function createEmptyEntity(category, name, turn = 0) {
@@ -38,6 +66,7 @@ export function createEmptyEntity(category, name, turn = 0) {
     const base = {
         id,
         name,
+        aliases: [],
         tier: 2,
         importance: 5,
         baseScore: 5,

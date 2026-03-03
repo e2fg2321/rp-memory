@@ -321,13 +321,14 @@ Only record events with importance >= 5. Focus on what the user chose to do, plo
 
   // ==================== Unified (All Categories) ====================
 
-  static UNIFIED_SYSTEM = `You are a narrative memory extraction system for roleplay. Your job is to extract and track information across 5 categories from the conversation in a single pass.
+  static UNIFIED_SYSTEM = `You are a narrative memory extraction system for roleplay. Your job is to extract and track information across 6 categories from the conversation in a single pass.
 
 ${COMMON_RULES}
 
-OUTPUT FORMAT — a flat JSON object with 5 category keys, each an array of entities. Use an empty array [] for categories with no changes.
+OUTPUT FORMAT — a flat JSON object with 6 category keys, each an array. Use an empty array [] for categories with no changes.
 
 IMPORTANT: Each entity MUST have its data nested inside a "fields" object. Do NOT put field values at the entity top level.
+IMPORTANT: If a character is already tracked under a different name variant (e.g., "Sir Kael" vs "Kael" vs "the knight"), use the EXISTING entity's name and ID. Do not create duplicates.
 
 Example:
 {
@@ -339,7 +340,10 @@ Example:
     { "id": "main-character", "name": "Aiden", "importance": 10, "fields": { "currentLocation": "Moonveil Tavern", "health": "lightly wounded" } }
   ],
   "goals": [],
-  "events": []
+  "events": [],
+  "beats": [
+    { "text": "Kira drew her silver blade and blocked the shadow creature's attack", "participants": ["kira-nightshade"], "importance": 6, "type": "conflict" }
+  ]
 }
 
 === CATEGORY 1: characters (NPCs) ===
@@ -385,17 +389,28 @@ Fields: description (1-2 sentences), turn (always 0), involvedEntities (string),
 
 Importance: 9-10 plot-changing/major revelation | 6-8 significant combat/discovery | 3-5 notable interaction | skip below 5
 
-Operations: Insert only — events are historical records. Never update or delete past events.`;
+Operations: Insert only — events are historical records. Never update or delete past events.
+
+=== CATEGORY 6: beats (Episodic Memory) ===
+Record atomic story beats — specific things that HAPPENED in the messages.
+Unlike events (major milestones), beats capture any meaningful action, dialogue, or change.
+
+Fields: text (1-2 sentence description of what happened), participants (array of entity IDs involved),
+importance (1-10), type ("conflict" | "discovery" | "relationship" | "decision" | "transition" | "revelation" | "consequence")
+
+Extract 1-4 beats per extraction. Focus on actions and changes, not static descriptions.
+Beats are append-only — never update or delete.`;
 
   // ==================== Unified (Chinese) ====================
 
-  static UNIFIED_SYSTEM_ZH = `你是一个用于角色扮演的叙事记忆提取系统。你的任务是在一次处理中从对话中提取并追踪5个类别的信息。
+  static UNIFIED_SYSTEM_ZH = `你是一个用于角色扮演的叙事记忆提取系统。你的任务是在一次处理中从对话中提取并追踪6个类别的信息。
 
 ${COMMON_RULES_ZH}
 
-输出格式 — 一个扁平的 JSON 对象，包含5个类别键，每个键对应一个实体数组。没有变更的类别使用空数组 []。
+输出格式 — 一个扁平的 JSON 对象，包含6个类别键，每个键对应一个数组。没有变更的类别使用空数组 []。
 
 重要：每个实体必须将数据嵌套在 "fields" 对象中。不要将字段值放在实体顶层。
+重要：如果一个角色已经以不同的名称变体被追踪（例如 "凯尔爵士" 与 "凯尔" 与 "骑士"），请使用现有实体的名称和 ID。不要创建重复条目。
 
 示例：
 {
@@ -407,7 +422,10 @@ ${COMMON_RULES_ZH}
     { "id": "main-character", "name": "Aiden", "importance": 10, "fields": { "currentLocation": "月影酒馆", "health": "轻伤" } }
   ],
   "goals": [],
-  "events": []
+  "events": [],
+  "beats": [
+    { "text": "Kira拔出银剑挡住了暗影生物的攻击", "participants": ["kira-nightshade"], "importance": 6, "type": "conflict" }
+  ]
 }
 
 === 类别 1：characters（NPC 角色）===
@@ -453,7 +471,17 @@ ${COMMON_RULES_ZH}
 
 重要度：9-10 剧情转折/重大揭示 | 6-8 重要战斗/发现 | 3-5 值得注意的互动 | 5以下跳过
 
-操作：仅插入 — 事件是历史记录。永远不要更新或删除过去的事件。`;
+操作：仅插入 — 事件是历史记录。永远不要更新或删除过去的事件。
+
+=== 类别 6：beats（情节记忆）===
+记录原子性的故事节拍 — 在消息中实际发生的具体事情。
+与事件（重大里程碑）不同，节拍捕捉任何有意义的行动、对话或变化。
+
+字段：text（1-2句话描述发生了什么）、participants（涉及的实体 ID 数组）、
+importance（1-10）、type（"conflict" | "discovery" | "relationship" | "decision" | "transition" | "revelation" | "consequence"）
+
+每次提取1-4个节拍。关注行动和变化，而非静态描述。
+节拍仅追加 — 永远不更新或删除。`;
 
   static getUnifiedUserPrompt(messages, currentState, userName, charName, lang = 'en', scenarioContext = '', precedingContext = '') {
     const stateSections = [];
@@ -489,7 +517,7 @@ ${COMMON_RULES_ZH}
       parts.push(`用户的角色是 "${userName}" — 仅在 mainCharacter 类别中追踪他们（id 为 "main-character"），不要放在 characters 中。
 主要 AI 角色是 "${charName}" — 如果有重要更新，请在 characters 中追踪他们。
 
-提取所有5个类别中的变更。仅输出差异 — 新增或变更的实体。没有变更的类别使用空数组 []。`);
+提取所有6个类别中的变更。仅输出差异 — 新增或变更的实体。没有变更的类别使用空数组 []。始终为当前消息包含1-4个节拍。`);
       return parts.join('\n\n');
     }
 
@@ -501,7 +529,7 @@ ${COMMON_RULES_ZH}
     parts.push(`The user's character is "${userName}" — track them ONLY in the mainCharacter category (id "main-character"), not in characters.
 The primary AI character is "${charName}" — DO track them in characters if they have meaningful updates.
 
-Extract all changes across all 5 categories. Output only the diff — new or changed entities. Use empty arrays [] for categories with no changes.`);
+Extract all changes across all 6 categories. Output only the diff — new or changed entities. Use empty arrays [] for categories with no changes. Always include 1-4 beats for the current messages.`);
     return parts.join('\n\n');
   }
 
