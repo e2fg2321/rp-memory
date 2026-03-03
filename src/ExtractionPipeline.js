@@ -9,6 +9,17 @@ export class ExtractionPipeline {
         this.memoryStore = memoryStore;
         this.getSettings = getSettings;
         this.decayEngine = decayEngine;
+        this._abortController = null;
+    }
+
+    /**
+     * Abort the current extraction if one is in progress.
+     */
+    abort() {
+        if (this._abortController) {
+            this._abortController.abort();
+            this._abortController = null;
+        }
     }
 
     /**
@@ -33,7 +44,8 @@ export class ExtractionPipeline {
         // Step 3: Snapshot current memory state for diff-mode prompts
         const currentState = this.memoryStore.serialize();
 
-        // Step 4: Single unified extraction call
+        // Step 4: Single unified extraction call (with abort support)
+        this._abortController = new AbortController();
         const result = await this._extractAll(formattedMessages, currentState, context);
 
         if (result) {
@@ -101,15 +113,22 @@ export class ExtractionPipeline {
         );
 
         try {
+            const signal = this._abortController?.signal;
             const response = await this.apiClient.chatCompletion([
                 { role: 'system', content: systemPrompt },
                 { role: 'user', content: userPrompt },
-            ]);
+            ], signal);
 
             return this._parseUnifiedResponse(response);
         } catch (error) {
+            if (error.name === 'AbortError') {
+                console.debug('[RP Memory] Extraction aborted by user');
+                return null;
+            }
             console.warn('[RP Memory] Unified extraction call failed:', error);
             return null;
+        } finally {
+            this._abortController = null;
         }
     }
 

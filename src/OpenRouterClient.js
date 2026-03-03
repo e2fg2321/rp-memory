@@ -26,8 +26,10 @@ export class OpenRouterClient {
     /**
      * Send a chat completion request to OpenRouter.
      * Returns the content string from the first choice.
+     * @param {Array} messages - Chat messages
+     * @param {AbortSignal} [signal] - Optional abort signal to cancel the request
      */
-    async chatCompletion(messages) {
+    async chatCompletion(messages, signal = null) {
         const settings = this.getSettings();
         const apiKey = await this.resolveKey();
 
@@ -56,6 +58,7 @@ export class OpenRouterClient {
                         'X-Title': 'RP Memory Extension',
                     },
                     body: JSON.stringify(body),
+                    signal,
                 });
 
                 if (!response.ok) {

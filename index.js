@@ -1087,10 +1087,23 @@ async function forceExtract() {
 }
 
 function showExtractionIndicator(visible) {
+    const $status = $('#rp_memory_status');
+    const $navBtn = $('.rp-mem-nav-extract-btn');
+
     if (visible) {
-        $('#rp_memory_status').show();
+        $status.show();
+        // Transform extract button into stop button
+        $navBtn
+            .addClass('extracting')
+            .attr('title', 'Stop Extraction')
+            .html('<i class="fa-solid fa-spinner fa-spin"></i><span>Stop</span>');
     } else {
-        $('#rp_memory_status').hide();
+        $status.hide();
+        // Restore extract button
+        $navBtn
+            .removeClass('extracting')
+            .attr('title', 'Extract Now')
+            .html('<i class="fa-solid fa-wand-magic-sparkles"></i><span>Extract</span>');
     }
 }
 
@@ -1367,10 +1380,15 @@ function bindFloatingNavListeners() {
         showCategoryPanel(category);
     });
 
-    // Extract button
+    // Extract / Stop button
     $wrapper.on('click', '.rp-mem-nav-extract-btn', function (e) {
         e.stopPropagation();
-        forceExtract();
+        if (memoryStore.isExtractionInProgress()) {
+            pipeline.abort();
+            toastr.info('Extraction stopped', 'RP Memory', { timeOut: 2000 });
+        } else {
+            forceExtract();
+        }
     });
 
     // Settings button — open sidebar drawer

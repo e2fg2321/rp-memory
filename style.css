@@ -582,6 +582,16 @@
     color: var(--SmartThemeBodyColor, #fff);
 }
 
+.rp-mem-nav-btn.extracting {
+    background: rgba(200, 80, 80, 0.25);
+    border-color: rgba(200, 80, 80, 0.4);
+    color: #e88;
+}
+
+.rp-mem-nav-btn.extracting:hover {
+    background: rgba(200, 80, 80, 0.4);
+}
+
 .rp-mem-nav-btn .rp-mem-nav-count {
     font-size: 0.8em;
     opacity: 0.5;
