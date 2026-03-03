@@ -57,9 +57,9 @@
     "Embedding Model": "嵌入模型",
     "[title]Refresh embedding model list": "刷新嵌入模型列表",
 
-    "Prompt Language": "提示词语言",
-    "Auto-detect (match chat)": "自动检测（匹配聊天语言）",
-    "Controls the language of extraction prompts and injected memory text. Auto-detect analyzes chat messages for CJK characters.": "控制提取提示词和注入记忆文本的语言。自动检测会分析聊天消息中的中日韩字符。",
+    "Language": "语言",
+    "Auto-detect": "自动检测",
+    "Controls the language of the UI, extraction prompts, and injected memory text.": "控制界面、提取提示词和注入记忆文本的语言。",
 
     "Debug mode (console logging)": "调试模式（控制台日志）",
     "No conflicts detected": "未检测到冲突",
