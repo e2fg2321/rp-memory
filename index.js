@@ -336,8 +336,14 @@ function bindSettingsListeners() {
         if ($nav.hasClass('collapsed')) $nav.removeClass('collapsed');
         // Show first category that has entities, or mainCharacter by default
         const counts = memoryStore ? memoryStore.getCounts() : {};
-        const firstPopulated = CATEGORY_DEFS.find(c => (counts[c.key] || 0) > 0);
-        showCategoryPanel(firstPopulated ? firstPopulated.key : 'mainCharacter');
+        const firstPopulated = ['mainCharacter', 'characters', 'locations', 'goals', 'events']
+            .find(key => (counts[key] || 0) > 0);
+        showCategoryPanel(firstPopulated || 'mainCharacter');
+        // Close the sidebar so user can see the floating panel
+        const $sidebar = $('#extensions_settings2');
+        if ($sidebar.is(':visible')) {
+            $('#extensionsMenuButton').trigger('click');
+        }
     });
 
     // Force extract
