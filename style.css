@@ -289,6 +289,31 @@
     flex-wrap: wrap;
 }
 
+.rp-mem-extract-depth {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.8em;
+}
+
+.rp-mem-extract-depth label {
+    margin: 0;
+    white-space: nowrap;
+    opacity: 0.7;
+}
+
+.rp-mem-extract-depth input {
+    padding: 2px 4px;
+    height: 26px;
+    text-align: center;
+}
+
+.rp-mem-extract-depth-hint {
+    opacity: 0.5;
+    font-size: 0.85em;
+    white-space: nowrap;
+}
+
 .rp-mem-token-count {
     font-size: 0.75em;
     opacity: 0.6;

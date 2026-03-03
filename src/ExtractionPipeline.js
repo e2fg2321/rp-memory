@@ -46,13 +46,21 @@ export class ExtractionPipeline {
 
         // Step 4: Single unified extraction call (with abort support)
         this._abortController = new AbortController();
-        const result = await this._extractAll(formattedMessages, currentState, context);
+        let result;
+        try {
+            result = await this._extractAll(formattedMessages, currentState, context);
+        } finally {
+            this._abortController = null;
+        }
 
         if (result) {
             let mergeCount = 0;
             for (const category of CATEGORIES) {
                 const entities = result[category];
                 if (entities?.length) {
+                    if (settings.debugMode) {
+                        console.debug(`[RP Memory] ${category}: ${entities.length} entities extracted`, entities);
+                    }
                     try {
                         this._mergeResult(category, { entities });
                         mergeCount++;
@@ -67,6 +75,122 @@ export class ExtractionPipeline {
         } else if (settings.debugMode) {
             console.debug('[RP Memory] Extraction returned no results');
         }
+    }
+
+    /**
+     * Extract a specific number of exchanges from the end of chat.
+     * Used for manual extraction with a configurable depth.
+     * @param {object} context - SillyTavern context
+     * @param {number} exchanges - Number of exchanges to extract
+     */
+    async extractRange(context, exchanges) {
+        const settings = this.getSettings();
+        const chat = context.chat;
+        const messageCount = exchanges * 2;
+
+        const recentMessages = this._getRecentMessages(chat, messageCount);
+
+        if (recentMessages.length === 0) {
+            console.debug('[RP Memory] No messages to extract from');
+            return;
+        }
+
+        if (settings.debugMode) {
+            console.debug(`[RP Memory] Manual extraction: ${recentMessages.length} messages (${exchanges} exchanges)`);
+        }
+
+        const formattedMessages = this._formatMessages(recentMessages, context.name1, context.name2, settings);
+        const currentState = this.memoryStore.serialize();
+
+        this._abortController = new AbortController();
+        let result;
+        try {
+            result = await this._extractAll(formattedMessages, currentState, context);
+        } finally {
+            this._abortController = null;
+        }
+
+        if (result) {
+            for (const category of CATEGORIES) {
+                const entities = result[category];
+                if (entities?.length) {
+                    if (settings.debugMode) {
+                        console.debug(`[RP Memory] ${category}: ${entities.length} entities extracted`, entities);
+                    }
+                    try {
+                        this._mergeResult(category, { entities });
+                    } catch (mergeError) {
+                        console.warn(`[RP Memory] Merge failed for ${category}:`, mergeError);
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Extract from the ENTIRE chat history in sequential chunks (oldest-first).
+     * Each chunk sees the accumulated memory state from prior chunks.
+     * @param {object} context - SillyTavern context
+     * @param {function} [onProgress] - Callback: (chunkIndex, totalChunks) => void
+     */
+    async extractFullHistory(context, onProgress = null) {
+        const settings = this.getSettings();
+        const chat = context.chat;
+
+        // Get ALL non-system messages
+        const allMessages = this._getRecentMessages(chat, chat.length);
+
+        if (allMessages.length === 0) {
+            console.debug('[RP Memory] No messages to extract from');
+            return;
+        }
+
+        // Chunk size: use the messagesPerExtraction setting (in exchanges × 2)
+        const chunkSize = settings.messagesPerExtraction * 2;
+        const chunks = [];
+        for (let i = 0; i < allMessages.length; i += chunkSize) {
+            chunks.push(allMessages.slice(i, i + chunkSize));
+        }
+
+        if (settings.debugMode) {
+            console.debug(`[RP Memory] Full history: ${allMessages.length} messages in ${chunks.length} chunks`);
+        }
+
+        this._abortController = new AbortController();
+
+        for (let ci = 0; ci < chunks.length; ci++) {
+            // Check for abort between chunks
+            if (this._abortController?.signal?.aborted) {
+                console.debug('[RP Memory] Full extraction aborted between chunks');
+                break;
+            }
+
+            if (onProgress) onProgress(ci + 1, chunks.length);
+
+            const formattedMessages = this._formatMessages(chunks[ci], context.name1, context.name2, settings);
+            // Fresh state snapshot each chunk — includes results from prior chunks
+            const currentState = this.memoryStore.serialize();
+
+            const result = await this._extractAll(formattedMessages, currentState, context);
+
+            if (result) {
+                for (const category of CATEGORIES) {
+                    const entities = result[category];
+                    if (entities?.length) {
+                        if (settings.debugMode) {
+                            console.debug(`[RP Memory] Chunk ${ci + 1}/${chunks.length} — ${category}: ${entities.length} entities`, entities);
+                        }
+                        try {
+                            this._mergeResult(category, { entities });
+                        } catch (mergeError) {
+                            console.warn(`[RP Memory] Merge failed for ${category} in chunk ${ci + 1}:`, mergeError);
+                        }
+                    }
+                }
+            }
+        }
+
+        this._abortController = null;
     }
 
     /**
@@ -127,8 +251,6 @@ export class ExtractionPipeline {
             }
             console.warn('[RP Memory] Unified extraction call failed:', error);
             return null;
-        } finally {
-            this._abortController = null;
         }
     }
 
@@ -171,6 +293,8 @@ export class ExtractionPipeline {
                 if (!Array.isArray(parsed[cat])) {
                     parsed[cat] = [];
                 }
+                // Normalize entities: if fields aren't nested under "fields", move them there
+                parsed[cat] = parsed[cat].map(entity => this._normalizeEntity(entity));
             }
 
             return parsed;
@@ -181,6 +305,36 @@ export class ExtractionPipeline {
             }
             return null;
         }
+    }
+
+    /**
+     * Normalize an entity: if field values are at the top level instead of nested
+     * under "fields", move them there. LLMs sometimes ignore the nesting instruction.
+     */
+    _normalizeEntity(entity) {
+        if (!entity || typeof entity !== 'object') return entity;
+
+        // Known structural keys that belong at entity top level
+        const STRUCTURAL_KEYS = new Set(['id', 'name', 'importance', 'fields']);
+
+        // If entity already has a populated fields object, it's fine
+        if (entity.fields && typeof entity.fields === 'object' && Object.keys(entity.fields).length > 0) {
+            return entity;
+        }
+
+        // Check if there are extra keys beyond structural ones (i.e. field values at top level)
+        const extraKeys = Object.keys(entity).filter(k => !STRUCTURAL_KEYS.has(k));
+        if (extraKeys.length === 0) return entity;
+
+        // Move extra keys into fields
+        const fields = entity.fields && typeof entity.fields === 'object' ? { ...entity.fields } : {};
+        for (const key of extraKeys) {
+            fields[key] = entity[key];
+            delete entity[key];
+        }
+        entity.fields = fields;
+
+        return entity;
     }
 
     /**

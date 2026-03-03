@@ -277,13 +277,21 @@ Only record events with importance >= 5. Focus on what the user chose to do, plo
 
 ${COMMON_RULES}
 
-OUTPUT FORMAT — a flat JSON object with 5 category keys, each an array of entities. Use an empty array [] for categories with no changes:
+OUTPUT FORMAT — a flat JSON object with 5 category keys, each an array of entities. Use an empty array [] for categories with no changes.
+
+IMPORTANT: Each entity MUST have its data nested inside a "fields" object. Do NOT put field values at the entity top level.
+
+Example:
 {
-  "characters": [...],
-  "locations": [...],
-  "mainCharacter": [...],
-  "goals": [...],
-  "events": [...]
+  "characters": [
+    { "id": "kira-nightshade", "name": "Kira Nightshade", "importance": 7, "fields": { "description": "Tall elf with silver hair", "personality": "Cold but protective", "status": "alive", "present": "yes" } }
+  ],
+  "locations": [],
+  "mainCharacter": [
+    { "id": "main-character", "name": "Aiden", "importance": 10, "fields": { "currentLocation": "Moonveil Tavern", "health": "lightly wounded" } }
+  ],
+  "goals": [],
+  "events": []
 }
 
 === CATEGORY 1: characters (NPCs) ===

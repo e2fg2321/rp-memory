@@ -29,6 +29,7 @@ const defaultSettings = {
     injectionRole: extension_prompt_roles.SYSTEM,
     userMessageWeight: 'high',
     messagesPerExtraction: 5,
+    manualExtractionExchanges: 0,
     maxRetries: 2,
     debugMode: true,
     embeddingsEnabled: false,
@@ -144,6 +145,7 @@ function syncUIFromSettings() {
     $(`input[name="rp_memory_position"][value="${s.injectionPosition}"]`).prop('checked', true);
     $('#rp_memory_depth').val(s.injectionDepth);
     $('#rp_memory_depth_container').toggle(s.injectionPosition === extension_prompt_types.IN_CHAT);
+    $('#rp_memory_extract_depth').val(s.manualExtractionExchanges);
     $('#rp_memory_debug').prop('checked', s.debugMode);
     $('#rp_memory_embeddings_enabled').prop('checked', s.embeddingsEnabled);
     $('#rp_memory_embedding_model_container').toggle(s.embeddingsEnabled);
@@ -235,6 +237,12 @@ function bindSettingsListeners() {
 
     // Refresh embedding models button
     $('#rp_memory_refresh_embedding_models').on('click', () => loadEmbeddingModelList(true));
+
+    // Manual extraction depth
+    $('#rp_memory_extract_depth').on('input', function () {
+        getSettings().manualExtractionExchanges = parseInt($(this).val()) || 0;
+        saveSettingsDebounced();
+    });
 
     // Test connection
     $('#rp_memory_test_connection').on('click', testConnection);
@@ -1083,7 +1091,47 @@ async function forceExtract() {
         return;
     }
 
-    await triggerExtraction(context);
+    if (memoryStore.isExtractionInProgress()) {
+        debugLog('Extraction already in progress, skipping');
+        return;
+    }
+
+    memoryStore.setExtractionInProgress(true);
+    showExtractionIndicator(true);
+
+    try {
+        const { chatId, characterId } = context;
+        const depth = s.manualExtractionExchanges;
+
+        if (depth > 0) {
+            // Extract specific number of exchanges
+            await pipeline.extractRange(context, depth);
+        } else {
+            // Full history — chunked
+            await pipeline.extractFullHistory(context, (chunk, total) => {
+                showExtractionProgress(chunk, total);
+            });
+        }
+
+        // Verify context hasn't changed during extraction
+        const newContext = getContext();
+        if (newContext.chatId !== chatId || newContext.characterId !== characterId) {
+            debugLog('Context changed during extraction, discarding');
+            return;
+        }
+
+        memoryStore.setLastExtractionTurn(memoryStore.getTurnCounter());
+        saveMemoryState();
+        injectMemoryPrompt();
+        renderMemoryUI();
+
+        const label = depth > 0 ? `Last ${depth} exchanges extracted` : 'Full history extracted';
+        debugLog('Manual extraction complete');
+        toastr.success(label, 'RP Memory', { timeOut: 3000 });
+    } finally {
+        memoryStore.setExtractionInProgress(false);
+        showExtractionIndicator(false);
+    }
 }
 
 function showExtractionIndicator(visible) {
@@ -1105,6 +1153,13 @@ function showExtractionIndicator(visible) {
             .attr('title', 'Extract Now')
             .html('<i class="fa-solid fa-wand-magic-sparkles"></i><span>Extract</span>');
     }
+}
+
+function showExtractionProgress(chunk, total) {
+    const $navBtn = $('.rp-mem-nav-extract-btn');
+    $navBtn.html(`<i class="fa-solid fa-spinner fa-spin"></i><span>${chunk}/${total}</span>`);
+    const $status = $('#rp_memory_status');
+    $status.html(`<i class="fa-solid fa-spinner fa-spin"></i> Extracting ${chunk}/${total}...`);
 }
 
 // ===================== Dynamic Model List =====================
