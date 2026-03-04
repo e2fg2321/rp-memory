@@ -556,6 +556,10 @@ async function injectMemoryPrompt() {
         promptText = injector.format(memoryStore, null, null, currentTurn, null, reflections);
     }
 
+    if (s.debugMode && promptText) {
+        debugLog('Injection prompt:\n', promptText);
+    }
+
     setExtensionPrompt(
         MODULE_NAME,
         promptText,
@@ -1228,19 +1232,23 @@ async function triggerExtraction(context) {
 
         memoryStore.setLastExtractionTurn(memoryStore.getTurnCounter());
 
-        // Emergency safety valve: hard-drop only at 2x cap
+        // Enforce beat cap
         const maxBeats = getSettings().maxBeats || 200;
-        memoryStore.enforceMaxBeats(maxBeats * 2);
+        memoryStore.enforceMaxBeats(maxBeats);
 
-        saveMemoryState();
-        injectMemoryPrompt();
-        renderMemoryUI();
+        // Prune low-importance events and completed/stale goals
+        memoryStore.pruneEvents(6, 10);
+        memoryStore.pruneGoals(5, memoryStore.getTurnCounter());
 
         debugLog('Extraction complete');
         toastr.success(tt`Memory updated`, 'RP Memory', { timeOut: 2000 });
 
         // Post-extraction: compress beats first, then optionally reflect (async, non-blocking)
+        // Defer save/inject/render until after reflection completes to avoid double-inject
         if (reflectionEngine) {
+            // Abort any previous reflection still running
+            reflectionEngine.abort();
+
             reflectionEngine.compress().then(() => {
                 if (reflectionEngine.shouldReflect()) {
                     return reflectionEngine.reflect();
@@ -1252,7 +1260,15 @@ async function triggerExtraction(context) {
                 debugLog('Post-extraction tasks complete');
             }).catch(err => {
                 console.warn('[RP Memory] Post-extraction tasks failed:', err.message);
+                // Still save/inject/render even if reflection failed
+                saveMemoryState();
+                injectMemoryPrompt();
+                renderMemoryUI();
             });
+        } else {
+            saveMemoryState();
+            injectMemoryPrompt();
+            renderMemoryUI();
         }
     } catch (err) {
         if (err?.name === 'AbortError') {
@@ -1346,20 +1362,23 @@ async function forceExtract() {
 
         memoryStore.setLastExtractionTurn(memoryStore.getTurnCounter());
 
-        // Emergency safety valve: hard-drop only at 2x cap
+        // Enforce beat cap
         const maxBeats = s.maxBeats || 200;
-        memoryStore.enforceMaxBeats(maxBeats * 2);
+        memoryStore.enforceMaxBeats(maxBeats);
 
-        saveMemoryState();
-        injectMemoryPrompt();
-        renderMemoryUI();
+        // Prune low-importance events and completed/stale goals
+        memoryStore.pruneEvents(6, 10);
+        memoryStore.pruneGoals(5, memoryStore.getTurnCounter());
 
         const label = extractedCount > 0 ? tt`Last ${extractedCount} exchanges extracted` : tt`Full history extracted`;
         debugLog('Manual extraction complete');
         toastr.success(label, 'RP Memory', { timeOut: 3000 });
 
         // Post-extraction: compress beats first, then optionally reflect (async, non-blocking)
+        // Defer save/inject/render until after reflection completes to avoid double-inject
         if (reflectionEngine) {
+            reflectionEngine.abort();
+
             reflectionEngine.compress().then(() => {
                 if (reflectionEngine.shouldReflect()) {
                     return reflectionEngine.reflect();
@@ -1371,7 +1390,14 @@ async function forceExtract() {
                 debugLog('Post-extraction tasks complete (manual)');
             }).catch(err => {
                 console.warn('[RP Memory] Post-extraction tasks failed:', err.message);
+                saveMemoryState();
+                injectMemoryPrompt();
+                renderMemoryUI();
             });
+        } else {
+            saveMemoryState();
+            injectMemoryPrompt();
+            renderMemoryUI();
         }
     } catch (err) {
         if (err?.name === 'AbortError') {
@@ -2239,7 +2265,7 @@ jQuery(async function () {
         apiClient.setKeyResolver(resolveApiKey);
         decayEngine = new DecayEngine(() => getSettings());
         pipeline = new ExtractionPipeline(apiClient, memoryStore, () => getSettings(), decayEngine, getPromptLanguage);
-        embeddingService = new EmbeddingService(apiClient, () => getSettings());
+        embeddingService = new EmbeddingService(apiClient, () => getSettings(), getPromptLanguage);
         reflectionEngine = new ReflectionEngine(apiClient, memoryStore, () => getSettings(), getPromptLanguage);
 
         // Sync UI

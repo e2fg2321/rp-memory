@@ -383,6 +383,7 @@ Operations: Add new goals when they emerge. Update progress/status as the narrat
 
 === CATEGORY 5: events ===
 Record SIGNIFICANT events (importance >= 5 only). Do NOT re-record already-tracked events. Set "turn" to 0 — the system fills in the actual turn number.
+Every event MUST include "id" (e.g. "evt-brief-slug") and "name" (short label, max 20 chars) at entity level.
 
 Fields: description (1-2 sentences), turn (always 0), involvedEntities (string), consequences (story implications), significance (narrative importance)
 
@@ -465,6 +466,7 @@ ${COMMON_RULES_ZH}
 
 === 类别 5：events（事件）===
 记录重要事件（仅重要度 >= 5）。不要重复记录已追踪的事件。将 "turn" 设为 0 — 系统会填入实际回合数。
+每个事件必须包含 "id"（如 "evt-brief-slug"）和 "name"（简短标签，最多20字符）。
 
 字段：description（1-2句话）、turn（始终为 0）、involvedEntities（字符串）、consequences（对故事的影响）、significance（叙事重要性）
 

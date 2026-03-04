@@ -270,7 +270,7 @@ async function main() {
             // Enforce caps — matches production lifecycle (index.js)
             memoryStore.enforceMaxBeats(settings.maxBeats);
             memoryStore.pruneEvents(6, 10);
-            memoryStore.pruneGoals(5);
+            memoryStore.pruneGoals(5, turn);
 
             // Post-extraction: compress + reflect — matches production pattern
             await reflectionEngine.compress();

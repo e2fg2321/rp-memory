@@ -114,6 +114,7 @@ export class OpenRouterClient {
 
     /**
      * Send an embedding request to OpenRouter.
+     * Automatically chunks large batches to stay within API limits.
      * @param {string[]} texts - Array of texts to embed
      * @param {string} model - Embedding model ID
      * @returns {Promise<number[][]>} Array of embedding vectors
@@ -125,6 +126,23 @@ export class OpenRouterClient {
             throw new Error('OpenRouter API key not configured');
         }
 
+        const BATCH_SIZE = 96;
+
+        if (texts.length <= BATCH_SIZE) {
+            return await this._embedBatch(texts, model, apiKey);
+        }
+
+        // Chunk into batches
+        const allEmbeddings = [];
+        for (let i = 0; i < texts.length; i += BATCH_SIZE) {
+            const batch = texts.slice(i, i + BATCH_SIZE);
+            const embeddings = await this._embedBatch(batch, model, apiKey);
+            allEmbeddings.push(...embeddings);
+        }
+        return allEmbeddings;
+    }
+
+    async _embedBatch(texts, model, apiKey) {
         const response = await fetch(`${this.baseUrl}/embeddings`, {
             method: 'POST',
             headers: {

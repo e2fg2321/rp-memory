@@ -7,6 +7,17 @@ export class ReflectionEngine {
         this.memoryStore = memoryStore;
         this.getSettings = getSettings;
         this.getLang = getLang || (() => 'en');
+        this._abortController = null;
+    }
+
+    /**
+     * Abort any in-progress reflection or compression.
+     */
+    abort() {
+        if (this._abortController) {
+            this._abortController.abort();
+            this._abortController = null;
+        }
     }
 
     /**
@@ -29,6 +40,7 @@ export class ReflectionEngine {
 
     /**
      * Run reflection: gather recent beats + entity state, ask LLM for observations.
+     * Returns true if reflections were generated, false otherwise.
      */
     async reflect() {
         const settings = this.getSettings();
@@ -46,7 +58,7 @@ export class ReflectionEngine {
             if (settings.debugMode) {
                 console.debug('[RP Memory] Reflection: no new beats to reflect on');
             }
-            return;
+            return false;
         }
 
         // Gather key entities (Tier 1-2) across categories — include IDs for participant matching
@@ -75,12 +87,17 @@ export class ReflectionEngine {
             { role: 'user', content: userPrompt },
         ];
 
+        this._abortController = new AbortController();
+
         try {
-            const response = await this.apiClient.chatCompletion(messages);
+            const signal = this._abortController.signal;
+            const response = await this.apiClient.chatCompletion(messages, signal);
             const reflections = this._parseReflectionResponse(response);
 
             if (reflections && reflections.length > 0) {
                 const currentTurn = this.memoryStore.getTurnCounter();
+                // Use the max beat storyTurn as the reflection's narrative timestamp
+                const narrativeTurn = Math.max(...recentBeats.map(b => b.storyTurn));
 
                 for (let i = 0; i < reflections.length; i++) {
                     const ref = reflections[i];
@@ -92,7 +109,7 @@ export class ReflectionEngine {
                         text: ref.text,
                         participants: Array.isArray(ref.participants) ? ref.participants : [],
                         sourceTurns: recentBeats.map(b => b.storyTurn),
-                        storyTurn: currentTurn,
+                        storyTurn: narrativeTurn,
                         importance: ref.importance || 7,
                     });
                 }
@@ -106,15 +123,23 @@ export class ReflectionEngine {
                 if (settings.debugMode) {
                     console.debug(`[RP Memory] Reflection complete: ${reflections.length} observations generated`);
                 }
+                return true;
             }
         } catch (err) {
+            if (err?.name === 'AbortError') {
+                console.debug('[RP Memory] Reflection aborted');
+                return false;
+            }
             console.warn('[RP Memory] Reflection failed:', err.message);
+        } finally {
+            this._abortController = null;
         }
+        return false;
     }
 
     /**
      * Compress old beats when count exceeds the cap.
-     * Groups old beats by type, summarizes each group via LLM.
+     * Groups old beats by temporal windows, then by type within each window.
      */
     async compress() {
         const settings = this.getSettings();
@@ -127,67 +152,85 @@ export class ReflectionEngine {
             console.debug(`[RP Memory] Beat compression: ${beats.length} beats, cap is ${maxBeats}`);
         }
 
-        // Sort by storyTurn ascending
-        beats.sort((a, b) => a.storyTurn - b.storyTurn);
+        // Work on a sorted copy (getBeats now returns a copy)
+        const sorted = beats.sort((a, b) => a.storyTurn - b.storyTurn);
 
         // Keep the last 50 beats as-is (recent detail)
-        const recentCutoff = beats.length - 50;
-        const oldBeats = beats.slice(0, recentCutoff);
-        const recentBeats = beats.slice(recentCutoff);
+        const recentCutoff = sorted.length - 50;
+        const oldBeats = sorted.slice(0, recentCutoff);
+        const recentBeats = sorted.slice(recentCutoff);
 
-        // Group old beats by type
-        const groups = {};
+        // Group by temporal windows of ~10 turns, then subdivide by type
+        const windowSize = 10;
+        const windows = [];
+        let currentWindow = [];
+        let windowStart = oldBeats.length > 0 ? oldBeats[0].storyTurn : 0;
+
         for (const beat of oldBeats) {
-            const key = beat.type || 'transition';
-            if (!groups[key]) groups[key] = [];
-            groups[key].push(beat);
+            if (beat.storyTurn - windowStart >= windowSize && currentWindow.length > 0) {
+                windows.push(currentWindow);
+                currentWindow = [];
+                windowStart = beat.storyTurn;
+            }
+            currentWindow.push(beat);
         }
+        if (currentWindow.length > 0) windows.push(currentWindow);
 
-        // For groups with 3+ beats, compress via LLM
+        // Compress each window
         const summaryBeats = [];
         const lang = this.getLang();
+        this._abortController = new AbortController();
 
-        for (const [type, groupBeats] of Object.entries(groups)) {
-            if (groupBeats.length < 3) {
-                // Keep as-is if too few to compress
-                summaryBeats.push(...groupBeats);
-                continue;
-            }
+        try {
+            for (const windowBeats of windows) {
+                if (this._abortController?.signal?.aborted) break;
 
-            // Process in chunks of 10
-            for (let i = 0; i < groupBeats.length; i += 10) {
-                const chunk = groupBeats.slice(i, i + 10);
-
-                if (chunk.length < 2) {
-                    summaryBeats.push(...chunk);
+                if (windowBeats.length < 3) {
+                    summaryBeats.push(...windowBeats);
                     continue;
                 }
 
-                try {
-                    const summary = await this._compressGroup(chunk, lang);
-                    if (summary) {
-                        const allParticipants = [...new Set(chunk.flatMap(b => b.participants || []))];
-                        const allTurns = chunk.map(b => b.storyTurn);
-                        summaryBeats.push({
-                            id: `beat-summary-${allTurns[0]}-${allTurns[allTurns.length - 1]}`,
-                            text: summary.text,
-                            participants: allParticipants,
-                            sourceTurns: allTurns,
-                            storyTurn: allTurns[allTurns.length - 1],
-                            importance: summary.importance || Math.max(...chunk.map(b => b.importance || 5)),
-                            type,
-                            compressed: true,
-                        });
-                    } else {
-                        // Compression failed — keep only high-importance beats
-                        summaryBeats.push(...chunk.filter(b => b.importance >= 7));
+                // Within each window, group by type for coherent summaries
+                const byType = {};
+                for (const beat of windowBeats) {
+                    const key = beat.type || 'transition';
+                    if (!byType[key]) byType[key] = [];
+                    byType[key].push(beat);
+                }
+
+                for (const [type, groupBeats] of Object.entries(byType)) {
+                    if (groupBeats.length < 2) {
+                        summaryBeats.push(...groupBeats);
+                        continue;
                     }
-                } catch (err) {
-                    console.warn('[RP Memory] Beat compression failed for group:', err.message);
-                    // Fallback: keep high-importance beats
-                    summaryBeats.push(...chunk.filter(b => b.importance >= 7));
+
+                    try {
+                        const summary = await this._compressGroup(groupBeats, lang);
+                        if (summary) {
+                            const allParticipants = [...new Set(groupBeats.flatMap(b => b.participants || []))];
+                            const allTurns = groupBeats.map(b => b.storyTurn);
+                            summaryBeats.push({
+                                id: `beat-summary-${allTurns[0]}-${allTurns[allTurns.length - 1]}`,
+                                text: summary.text,
+                                participants: allParticipants,
+                                sourceTurns: allTurns,
+                                storyTurn: allTurns[allTurns.length - 1],
+                                importance: summary.importance || Math.max(...groupBeats.map(b => b.importance || 5)),
+                                type,
+                                compressed: true,
+                            });
+                        } else {
+                            summaryBeats.push(...groupBeats.filter(b => b.importance >= 7));
+                        }
+                    } catch (err) {
+                        if (err?.name === 'AbortError') break;
+                        console.warn('[RP Memory] Beat compression failed for group:', err.message);
+                        summaryBeats.push(...groupBeats.filter(b => b.importance >= 7));
+                    }
                 }
             }
+        } finally {
+            this._abortController = null;
         }
 
         // Rebuild beats: summaries + recent
@@ -213,7 +256,8 @@ export class ReflectionEngine {
             { role: 'user', content: userPrompt },
         ];
 
-        const response = await this.apiClient.chatCompletion(messages);
+        const signal = this._abortController?.signal;
+        const response = await this.apiClient.chatCompletion(messages, signal);
         return this._parseJSON(response);
     }
 

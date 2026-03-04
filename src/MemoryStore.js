@@ -248,6 +248,35 @@ export class MemoryStore {
     }
 
     /**
+     * Auto-resolve conflicts that have gone stale (no user action for N turns).
+     * Only call during incremental extraction — never during batch/full-history.
+     * @param {number} currentTurn
+     * @param {number} staleTurns - Turns after which unresolved conflicts auto-resolve
+     * @returns {number} Number of conflicts auto-resolved
+     */
+    autoResolveStaleConflicts(currentTurn, staleTurns = 10) {
+        let resolved = 0;
+        const allCategories = ['mainCharacter', ...CATEGORIES];
+
+        for (const cat of allCategories) {
+            const entities = this.getAllEntities(cat);
+            for (const entity of Object.values(entities)) {
+                if (!entity.conflicts?.length) continue;
+                for (const c of entity.conflicts) {
+                    if (c.resolved) continue;
+                    if (currentTurn - c.detectedTurn >= staleTurns) {
+                        c.resolved = true;
+                        c.autoResolved = true;
+                        resolved++;
+                    }
+                }
+            }
+        }
+
+        return resolved;
+    }
+
+    /**
      * Get total count of unresolved conflicts.
      */
     getConflictCount() {
@@ -267,11 +296,13 @@ export class MemoryStore {
     // --- Beats (Episodic Memory Layer 2) ---
 
     addBeat(beat) {
+        // Dedup: skip if a beat with the same ID already exists
+        if (this._state.beats.some(b => b.id === beat.id)) return;
         this._state.beats.push(beat);
     }
 
     getBeats() {
-        return this._state.beats;
+        return [...this._state.beats];
     }
 
     getRecentBeats(n) {
@@ -321,7 +352,7 @@ export class MemoryStore {
     }
 
     getReflections() {
-        return this._state.reflections;
+        return [...this._state.reflections];
     }
 
     getRecentReflections(n) {
@@ -329,6 +360,72 @@ export class MemoryStore {
             .slice()
             .sort((a, b) => b.storyTurn - a.storyTurn)
             .slice(0, n);
+    }
+
+    /**
+     * Prune low-importance events. Keeps events with importance >= minImportance
+     * plus the most recent `keepRecent` events regardless of importance.
+     */
+    pruneEvents(minImportance = 6, keepRecent = 10) {
+        const events = this._state.events;
+        const entries = Object.entries(events);
+        if (entries.length <= keepRecent) return;
+
+        // Sort by createdTurn descending (newest first)
+        entries.sort((a, b) => (b[1].createdTurn || 0) - (a[1].createdTurn || 0));
+
+        const recentIds = new Set(entries.slice(0, keepRecent).map(([id]) => id));
+
+        for (const [id, entity] of entries) {
+            if (recentIds.has(id)) continue;
+            if (entity.tier === 1) continue; // Never prune pinned
+            if ((entity.importance || 0) < minImportance) {
+                delete this._state.events[id];
+            }
+        }
+    }
+
+    /**
+     * Prune completed/failed/abandoned goals that are no longer narratively relevant,
+     * and retire (demote to tier-3) goals that haven't been mentioned for too long.
+     *
+     * @param {number} keepRecent - Always keep the N most recently created goals
+     * @param {number} currentTurn - Current story turn (for staleness check)
+     * @param {number} retireAfterTurns - Demote to tier-3 after this many turns without mention (0 = disabled)
+     */
+    pruneGoals(keepRecent = 5, currentTurn = 0, retireAfterTurns = 50) {
+        const goals = this._state.goals;
+        const entries = Object.entries(goals);
+        if (entries.length <= keepRecent) return;
+
+        const TERMINAL_STATUSES = new Set(['completed', 'failed', 'abandoned']);
+
+        // Sort by createdTurn descending (newest first)
+        entries.sort((a, b) => (b[1].createdTurn || 0) - (a[1].createdTurn || 0));
+
+        const recentIds = new Set(entries.slice(0, keepRecent).map(([id]) => id));
+
+        for (const [id, entity] of entries) {
+            if (recentIds.has(id)) continue;
+
+            // Delete terminal goals (completed/failed/abandoned) unless pinned or high-importance
+            const status = entity.fields?.status;
+            const statusVal = typeof status === 'object' && status !== null && 'value' in status
+                ? status.value : status;
+            if (TERMINAL_STATUSES.has(statusVal) && entity.tier !== 1 && (entity.importance || 0) < 8) {
+                delete this._state.goals[id];
+                continue;
+            }
+
+            // Retire stale goals: demote to tier-3 if not mentioned for retireAfterTurns
+            if (retireAfterTurns > 0 && currentTurn > 0 && entity.tier !== 3) {
+                const lastMention = entity.lastMentionedTurn || entity.createdTurn || 0;
+                const turnsSince = currentTurn - lastMention;
+                if (turnsSince >= retireAfterTurns) {
+                    entity.tier = 3;
+                }
+            }
+        }
     }
 
     /**

@@ -16,15 +16,26 @@ export const SCENE_ANCHORS = {
 };
 
 /**
+ * Chinese scene anchors — selected based on detected language.
+ */
+export const SCENE_ANCHORS_ZH = {
+    combat:   '战斗 攻击 防御 剑 伤口 鲜血 闪避 打击 杀 武器 格斗 魔法攻击',
+    social:   '对话 交谈 说服 谈判 调情 争吵 信任 情感 关系 感情 聊天',
+    explore:  '旅行 到达 发现 进入 观察 搜索 调查 新地方 旅程 移动 探索',
+    plot:     '揭露 背叛 计划 秘密 任务 目标 线索 谜团 阴谋 诡计 真相',
+    downtime: '休息 商店 制作 治疗 训练 营地 准备 睡觉 恢复 交易 买卖',
+};
+
+/**
  * Per category, per scene type: ordered list of fields from most to least relevant.
  * Fields not listed are excluded for that scene type.
  */
 export const FIELD_RELEVANCE = {
     characters: {
-        combat:   ['status', 'present', 'description'],
-        social:   ['personality', 'relationships', 'present', 'status'],
-        explore:  ['description', 'present', 'status'],
-        plot:     ['relationships', 'status', 'present', 'personality'],
+        combat:   ['status', 'description'],
+        social:   ['personality', 'relationships', 'status'],
+        explore:  ['description', 'status'],
+        plot:     ['relationships', 'status', 'personality'],
         downtime: ['description', 'personality', 'relationships'],
     },
     locations: {

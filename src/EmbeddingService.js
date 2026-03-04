@@ -1,15 +1,17 @@
-import { SCENE_ANCHORS } from './SceneConfig.js';
+import { SCENE_ANCHORS, SCENE_ANCHORS_ZH } from './SceneConfig.js';
 import { unwrapField } from './Utils.js';
 
 export class EmbeddingService {
-    constructor(apiClient, getSettings) {
+    constructor(apiClient, getSettings, getLang = null) {
         this.apiClient = apiClient;
         this.getSettings = getSettings;
+        this.getLang = getLang || (() => 'en');
         this._cache = new Map(); // key = "category:entityId" → number[]
         this._beatCache = new Map(); // key = beatId → number[]
         this._reflectionCache = new Map(); // key = reflectionId → number[]
         this._contextCache = null; // { hash, embedding }
         this._sceneAnchors = null; // Map<string, number[]> — scene type → embedding
+        this._sceneAnchorsLang = null; // language used for cached scene anchors
     }
 
     /**
@@ -54,18 +56,22 @@ export class EmbeddingService {
 
     /**
      * Ensure scene anchor embeddings are cached.
+     * Re-embeds if the language has changed since last caching.
      */
     async _ensureSceneAnchors() {
-        if (this._sceneAnchors) return;
+        const lang = this.getLang();
+        if (this._sceneAnchors && this._sceneAnchorsLang === lang) return;
 
-        const types = Object.keys(SCENE_ANCHORS);
-        const texts = types.map(t => SCENE_ANCHORS[t]);
+        const anchors = lang === 'zh' ? SCENE_ANCHORS_ZH : SCENE_ANCHORS;
+        const types = Object.keys(anchors);
+        const texts = types.map(t => anchors[t]);
         const embeddings = await this.embedTexts(texts);
 
         this._sceneAnchors = new Map();
         for (let i = 0; i < types.length; i++) {
             this._sceneAnchors.set(types[i], embeddings[i]);
         }
+        this._sceneAnchorsLang = lang;
     }
 
     /**
@@ -196,12 +202,12 @@ export class EmbeddingService {
             }
         }
 
-        // Boost co-occurring entities (max boost = 0.25)
+        // Boost co-occurring entities (max boost = 0.10)
         let boosted = false;
         for (const item of ranked) {
             const freq = coOccurrence.get(item.entity.id) || 0;
             if (freq > 0) {
-                item.score += 0.05 * Math.min(freq, 5);
+                item.score += 0.02 * Math.min(freq, 5);
                 boosted = true;
             }
         }
@@ -418,6 +424,7 @@ export class EmbeddingService {
         this._reflectionCache.clear();
         this._contextCache = null;
         this._sceneAnchors = null;
+        this._sceneAnchorsLang = null;
     }
 
     /**
@@ -458,6 +465,7 @@ export class EmbeddingService {
                 sceneAnchors[type] = vec;
             }
             result.sceneAnchors = sceneAnchors;
+            result.sceneAnchorsLang = this._sceneAnchorsLang;
         }
 
         return result;
@@ -472,6 +480,7 @@ export class EmbeddingService {
         this._reflectionCache.clear();
         this._contextCache = null;
         this._sceneAnchors = null;
+        this._sceneAnchorsLang = null;
 
         if (!savedState || !savedState.embeddings) return;
 
@@ -506,7 +515,8 @@ export class EmbeddingService {
             for (const [type, vec] of Object.entries(savedState.sceneAnchors)) {
                 this._sceneAnchors.set(type, vec);
             }
-            console.debug(`[RP Memory] Loaded ${this._sceneAnchors.size} persisted scene anchors`);
+            this._sceneAnchorsLang = savedState.sceneAnchorsLang || 'en';
+            console.debug(`[RP Memory] Loaded ${this._sceneAnchors.size} persisted scene anchors (lang: ${this._sceneAnchorsLang})`);
         }
 
         console.debug(`[RP Memory] Loaded ${this._cache.size} persisted embeddings`);

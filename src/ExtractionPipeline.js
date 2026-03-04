@@ -3,6 +3,20 @@ import { generateId, unwrapField, wrapField, updateFieldProvenance } from './Uti
 
 const CATEGORIES = ['characters', 'locations', 'mainCharacter', 'goals', 'events'];
 
+/**
+ * Fields that represent mutable state — expected to change frequently as the
+ * story progresses. Changes to these are normal progression, not conflicts.
+ *
+ * Stable/factual fields like description and personality are NOT in this set,
+ * so substantial changes to them will be flagged as conflicts (the rephrasing
+ * filter in _isRephrasing handles minor rewording).
+ */
+const MUTABLE_FIELDS = new Set([
+    'currentLocation', 'currentTime', 'status', 'conditions', 'buffs',
+    'health', 'inventory', 'present', 'progress', 'blockers',
+    'atmosphere', 'skills', 'connections', 'relationships',
+]);
+
 /** Patterns that look like prompt injection attempts */
 const INJECTION_PATTERNS = [
     /ignore\s+(all\s+)?previous/i,
@@ -21,6 +35,7 @@ export class ExtractionPipeline {
         this.decayEngine = decayEngine;
         this.getLang = getLang || (() => 'en');
         this._abortController = null;
+        this._batchMode = false;
     }
 
     /**
@@ -98,6 +113,15 @@ export class ExtractionPipeline {
             }
         } else if (settings.debugMode) {
             console.debug('[RP Memory] Extraction returned no results');
+        }
+
+        // Auto-resolve stale conflicts during incremental extraction only
+        if (!this._batchMode) {
+            const currentTurn = this.memoryStore.getTurnCounter();
+            const resolved = this.memoryStore.autoResolveStaleConflicts(currentTurn);
+            if (resolved > 0 && settings.debugMode) {
+                console.debug(`[RP Memory] Auto-resolved ${resolved} stale conflict(s)`);
+            }
         }
     }
 
@@ -190,10 +214,14 @@ export class ExtractionPipeline {
         const scenarioContext = this._buildScenarioContext(context);
 
         this._abortController = new AbortController();
+        this._batchMode = true;
 
         try {
             for (let ci = 0; ci < chunks.length; ci++) {
                 if (onProgress) onProgress(ci + 1, chunks.length);
+
+                // Advance turn counter per chunk so beats/entities get distinct storyTurns
+                this.memoryStore.incrementTurn();
 
                 const formattedTarget = this._formatMessages(chunks[ci], context.name1, context.name2, settings);
                 const formattedContext = ci > 0
@@ -226,6 +254,7 @@ export class ExtractionPipeline {
             }
         } finally {
             this._abortController = null;
+            this._batchMode = false;
         }
     }
 
@@ -290,22 +319,29 @@ export class ExtractionPipeline {
             state.mainCharacter = stripEntity(mc);
         }
 
-        // Compact catalog of ALL entities for dedup (id, name, aliases only)
+        // Compact catalog for dedup: Tier 1-2 entities (id, name, aliases).
+        // Tier 3 are archived and unlikely to be re-mentioned — skip to save prompt tokens.
+        // Cap at 50 entries to prevent prompt bloat in long sessions.
         const entityCatalog = [];
 
         if (mc) {
-            entityCatalog.push({ id: mc.id, name: mc.name, aliases: mc.aliases || [], category: 'mainCharacter' });
+            entityCatalog.push({ id: mc.id, name: mc.name, aliases: mc.aliases || [] });
         }
 
         for (const cat of CATEGORIES) {
             const all = this.memoryStore.getAllEntities(cat);
             for (const [id, entity] of Object.entries(all)) {
-                entityCatalog.push({ id, name: entity.name, aliases: entity.aliases || [], category: cat });
+                if (entity.tier <= 2) {
+                    entityCatalog.push({ id, name: entity.name, aliases: entity.aliases || [], _imp: entity.importance || 5 });
+                }
                 if (entity.tier === 1) state[cat][id] = stripEntity(entity);
             }
         }
 
-        state.entityCatalog = entityCatalog;
+        // Sort by importance descending and cap at 50
+        entityCatalog.sort((a, b) => (b._imp || 10) - (a._imp || 5));
+        // Strip the sort key before sending to LLM
+        state.entityCatalog = entityCatalog.slice(0, 50).map(({ _imp, ...rest }) => rest);
 
         return state;
     }
@@ -523,11 +559,14 @@ export class ExtractionPipeline {
             if (!beat.text) continue;
 
             const sanitizedText = this._sanitizeFieldValue(beat.text);
+            const resolvedParticipants = this._resolveParticipants(
+                Array.isArray(beat.participants) ? beat.participants : [],
+            );
 
             const beatObj = {
                 id: `beat-${currentTurn}-${this._shortHash(sanitizedText)}`,
                 text: sanitizedText,
-                participants: Array.isArray(beat.participants) ? beat.participants : [],
+                participants: resolvedParticipants,
                 sourceTurns: [currentTurn],
                 storyTurn: currentTurn,
                 importance: beat.importance || 5,
@@ -540,6 +579,55 @@ export class ExtractionPipeline {
         if (this.getSettings().debugMode) {
             console.debug(`[RP Memory] ${beats.length} beats extracted at turn ${currentTurn}`);
         }
+    }
+
+    /**
+     * Resolve beat participant references to valid entity IDs.
+     * The LLM may output names instead of IDs, or inconsistent casing.
+     */
+    _resolveParticipants(participants) {
+        const resolved = [];
+        const categories = ['mainCharacter', 'characters', 'locations', 'goals', 'events'];
+
+        for (const participant of participants) {
+            if (!participant || typeof participant !== 'string') continue;
+
+            const normalized = participant.trim();
+            if (!normalized) continue;
+
+            // First: try as-is (already a valid kebab-case ID)
+            const asId = generateId(normalized);
+            let found = false;
+
+            for (const cat of categories) {
+                // Try direct ID lookup
+                if (this.memoryStore.getEntity(cat, asId)) {
+                    resolved.push(asId);
+                    found = true;
+                    break;
+                }
+                // Try original string as ID
+                if (normalized !== asId && this.memoryStore.getEntity(cat, normalized)) {
+                    resolved.push(normalized);
+                    found = true;
+                    break;
+                }
+                // Try alias-based resolution
+                const byAlias = this.memoryStore.findEntityByAlias(cat, normalized);
+                if (byAlias) {
+                    resolved.push(byAlias.id);
+                    found = true;
+                    break;
+                }
+            }
+
+            // Fallback: use the kebab-case version even if unresolved
+            if (!found) {
+                resolved.push(asId);
+            }
+        }
+
+        return [...new Set(resolved)]; // Deduplicate
     }
 
     /**
@@ -564,11 +652,41 @@ export class ExtractionPipeline {
         const currentTurn = this.memoryStore.getTurnCounter();
 
         for (const entity of extractedData.entities) {
-            if (!entity.name && !entity.id) continue;
+            // Derive missing id/name for events from description field
+            if (!entity.name && !entity.id) {
+                const desc = entity.fields?.description;
+                const descText = typeof desc === 'string' ? desc
+                    : (desc && typeof desc === 'object' && 'value' in desc) ? desc.value : null;
+                if (descText && category === 'events') {
+                    // Truncate at first punctuation boundary within 30 chars for cleaner names
+                    const punctMatch = descText.slice(0, 30).match(/[。，！？；、.!?,;]/);
+                    entity.name = punctMatch
+                        ? descText.slice(0, punctMatch.index)
+                        : descText.slice(0, 30);
+                    entity.id = 'evt-' + generateId(descText.slice(0, 30));
+                } else {
+                    continue;
+                }
+            }
+
+            // Events: derive importance from fields.significance if not set at entity level
+            if (category === 'events' && entity.importance == null) {
+                const sig = entity.fields?.significance;
+                const sigNum = typeof sig === 'number' ? sig
+                    : (typeof sig === 'string' ? parseInt(sig, 10) : NaN);
+                if (!isNaN(sigNum) && sigNum >= 1 && sigNum <= 10) {
+                    entity.importance = sigNum;
+                }
+            }
 
             // Flatten any arrays/objects from LLM output to strings
             if (entity.fields) {
                 entity.fields = this._flattenFields(entity.fields, currentTurn);
+            }
+
+            // Events: backfill the turn field with the actual current turn
+            if (category === 'events' && entity.fields) {
+                entity.fields.turn = wrapField(String(currentTurn), currentTurn);
             }
 
             // Sanitize field values
@@ -609,13 +727,16 @@ export class ExtractionPipeline {
 
             if (existing) {
                 // Update existing entity
-                const conflicts = this._detectConflicts(existing, entity, currentTurn);
+                const newConflicts = this._detectConflicts(existing, entity, currentTurn);
                 const mergedFields = this._mergeFields(existing.fields, entity.fields, currentTurn);
                 const newImportance = entity.importance ?? existing.importance;
 
+                // Dedup: replace stale unresolved conflict on same field with latest
+                const mergedConflicts = this._mergeConflicts(existing.conflicts || [], newConflicts);
+
                 this.memoryStore.updateEntity(category, existing.id, {
                     fields: mergedFields,
-                    conflicts: [...(existing.conflicts || []), ...conflicts],
+                    conflicts: mergedConflicts,
                 });
 
                 // Reinforce: reset decay, restore score, promote Tier 3 → 2 if applicable
@@ -656,14 +777,15 @@ export class ExtractionPipeline {
         const existing = this.memoryStore.getMainCharacter();
 
         if (existing) {
-            const conflicts = this._detectConflicts(existing, entity, currentTurn);
+            const newConflicts = this._detectConflicts(existing, entity, currentTurn);
             const mergedFields = this._mergeFields(existing.fields, entity.fields, currentTurn);
+            const mergedConflicts = this._mergeConflicts(existing.conflicts || [], newConflicts);
 
             this.memoryStore.updateEntity('mainCharacter', existing.id, {
                 name: entity.name || existing.name,
                 fields: mergedFields,
                 lastMentionedTurn: currentTurn,
-                conflicts: [...(existing.conflicts || []), ...conflicts],
+                conflicts: mergedConflicts,
             });
         } else {
             this.memoryStore.addEntity('mainCharacter', {
@@ -765,6 +887,9 @@ export class ExtractionPipeline {
         for (const [key, newVal] of Object.entries(updated.fields)) {
             if (newVal === null || newVal === undefined) continue;
 
+            // Mutable fields change naturally over time — not conflicts
+            if (MUTABLE_FIELDS.has(key)) continue;
+
             const oldVal = existing.fields[key];
             if (oldVal === undefined || oldVal === null || oldVal === '') continue;
 
@@ -774,19 +899,97 @@ export class ExtractionPipeline {
 
             if (!oldPlain || !newPlain) continue;
             if (typeof oldPlain !== 'string' || typeof newPlain !== 'string') continue;
+            if (oldPlain.trim() === '' || newPlain.trim() === '') continue;
+            if (oldPlain === newPlain) continue;
 
-            if (oldPlain.trim() !== '' && newPlain.trim() !== '' && oldPlain !== newPlain) {
-                conflicts.push({
-                    field: key,
-                    oldValue: oldPlain,
-                    newValue: newPlain,
-                    detectedTurn: turn,
-                    resolved: false,
-                });
-            }
+            // Skip if new value is a superset of old (appending info, not contradicting)
+            if (newPlain.includes(oldPlain)) continue;
+
+            // Skip rephrasing: if old and new share most content words, it's not a real conflict
+            if (this._isRephrasing(oldPlain, newPlain)) continue;
+
+            conflicts.push({
+                field: key,
+                oldValue: oldPlain,
+                newValue: newPlain,
+                detectedTurn: turn,
+                resolved: false,
+            });
         }
 
         return conflicts;
+    }
+
+    /**
+     * Check if two values are likely a rephrasing of the same idea.
+     * Tokenizes into content words and checks overlap ratio.
+     * High overlap = rephrasing, low overlap = genuine conflict.
+     *
+     * CJK-aware: splits CJK runs into bigrams (2-char shingles) since
+     * Chinese/Japanese/Korean text has no word-separating whitespace.
+     */
+    _isRephrasing(oldText, newText, threshold = 0.6) {
+        const CJK_RANGE = /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/;
+
+        const tokenize = (text) => {
+            const tokens = new Set();
+            // Strip punctuation, normalize
+            const cleaned = text.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ');
+
+            for (const segment of cleaned.split(/\s+/)) {
+                if (!segment) continue;
+                if (CJK_RANGE.test(segment)) {
+                    // CJK: emit character bigrams (shingles)
+                    if (segment.length === 1) {
+                        tokens.add(segment);
+                    } else {
+                        for (let i = 0; i < segment.length - 1; i++) {
+                            tokens.add(segment.slice(i, i + 2));
+                        }
+                    }
+                } else {
+                    tokens.add(segment);
+                }
+            }
+            return tokens;
+        };
+
+        const oldTokens = tokenize(oldText);
+        const newTokens = tokenize(newText);
+
+        if (oldTokens.size === 0 || newTokens.size === 0) return false;
+
+        let shared = 0;
+        for (const t of oldTokens) {
+            if (newTokens.has(t)) shared++;
+        }
+
+        const minSize = Math.min(oldTokens.size, newTokens.size);
+        return (shared / minSize) >= threshold;
+    }
+
+    /**
+     * Merge new conflicts into existing list. For each field:
+     * - Resolved conflicts are always kept (historical record)
+     * - If there's already an unresolved conflict on the same field,
+     *   replace it with the latest one (don't stack rephrasings)
+     */
+    _mergeConflicts(existing, incoming) {
+        const merged = [...existing];
+
+        for (const newConflict of incoming) {
+            const staleIdx = merged.findIndex(
+                c => !c.resolved && c.field === newConflict.field,
+            );
+            if (staleIdx !== -1) {
+                // Replace stale unresolved conflict with latest
+                merged[staleIdx] = newConflict;
+            } else {
+                merged.push(newConflict);
+            }
+        }
+
+        return merged;
     }
 
     /**
