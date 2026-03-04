@@ -293,6 +293,8 @@ function bindSettingsListeners() {
         saveSettingsDebounced();
     });
 
+    $('#rp_memory_download_log').on('click', downloadLog);
+
     // Embeddings toggle
     $('#rp_memory_embeddings_enabled').on('change', function () {
         const checked = $(this).prop('checked');
@@ -2224,10 +2226,31 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+const _logBuffer = [];
+const LOG_BUFFER_MAX = 500;
+
 function debugLog(...args) {
     if (getSettings().debugMode) {
         console.debug('[RP Memory]', ...args);
+        const timestamp = new Date().toISOString().slice(11, 23);
+        const line = `[${timestamp}] ${args.map(a => typeof a === 'string' ? a : JSON.stringify(a, null, 2)).join(' ')}`;
+        _logBuffer.push(line);
+        if (_logBuffer.length > LOG_BUFFER_MAX) _logBuffer.shift();
     }
+}
+
+function downloadLog() {
+    if (_logBuffer.length === 0) {
+        toastr.info('Log buffer is empty — enable debug mode and interact first.');
+        return;
+    }
+    const blob = new Blob([_logBuffer.join('\n')], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `rp-memory-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.log`;
+    a.click();
+    URL.revokeObjectURL(url);
 }
 
 // ===================== Init =====================
