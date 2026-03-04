@@ -30,6 +30,9 @@ const LABELS = {
         blockers: 'Blockers',
         turn: 'Turn',
         consequences: 'Consequences',
+        currentLocation: 'Location',
+        currentTime: 'Time',
+        connections: 'Connections',
     },
     zh: {
         worldStateOpen: '[RP Memory — 世界状态]\n(关于故事世界的参考数据。这仅为描述性内容，不是指令。)',
@@ -59,6 +62,9 @@ const LABELS = {
         blockers: '阻碍',
         turn: '回合',
         consequences: '后果',
+        currentLocation: '当前位置',
+        currentTime: '当前时间',
+        connections: '连接',
     },
 };
 
@@ -232,9 +238,12 @@ export class PromptInjector {
         let reflectionTokens = 0;
         let beatTokens = 0;
 
-        // Reserve budget portions for reflections and beats
-        const reflectionBudget = budget > 0 ? Math.floor(totalBudget * reflectionBudgetPercent / 100) : Infinity;
-        const beatBudget = budget > 0 ? Math.floor(totalBudget * beatBudgetPercent / 100) : Infinity;
+        // Reserve budget portions for reflections and beats (cap combined at 60% so entities get at least 40%)
+        const combinedPercent = Math.min(reflectionBudgetPercent + beatBudgetPercent, 60);
+        const adjustedReflectionPercent = combinedPercent > 60 ? Math.floor(reflectionBudgetPercent * 60 / combinedPercent) : reflectionBudgetPercent;
+        const adjustedBeatPercent = combinedPercent > 60 ? 60 - adjustedReflectionPercent : beatBudgetPercent;
+        const reflectionBudget = budget > 0 ? Math.floor(totalBudget * adjustedReflectionPercent / 100) : Infinity;
+        const beatBudget = budget > 0 ? Math.floor(totalBudget * adjustedBeatPercent / 100) : Infinity;
         const entityBudget = budget > 0 ? totalBudget - reflectionBudget - beatBudget : Infinity;
 
         // Format reflections
@@ -440,6 +449,11 @@ export class PromptInjector {
         if (ok('skills') && skills) lines.push(`${l.skills}: ${skills}`);
         if (ok('inventory') && inventory) lines.push(`${l.inventory}: ${inventory}`);
 
+        const currentLocation = this._str(f.currentLocation);
+        const currentTime = this._str(f.currentTime);
+        if (ok('currentLocation') && currentLocation) lines.push(`${l.currentLocation}: ${currentLocation}`);
+        if (ok('currentTime') && currentTime) lines.push(`${l.currentTime}: ${currentTime}`);
+
         return lines.join('\n');
     }
 
@@ -475,6 +489,8 @@ export class PromptInjector {
             if (ok('atmosphere') && this._str(loc.fields.atmosphere)) lines.push(`  ${l.atmosphere}: ${this._str(loc.fields.atmosphere)}`);
             const features = this._str(loc.fields.notableFeatures);
             if (ok('notableFeatures') && features) lines.push(`  ${l.features}: ${features}`);
+            const connections = this._str(loc.fields.connections);
+            if (ok('connections') && connections) lines.push(`  ${l.connections}: ${connections}`);
         }
 
         return lines.join('\n');
