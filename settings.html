@@ -239,8 +239,8 @@
                         <input id="rp_memory_goals_intent_async" type="checkbox" />
                         <span data-i18n="Run in background (async)">Run in background (async)</span>
                     </label>
-                    <div class="rp-mem-embeddings-hint" data-i18n="Sync: analysis blocks extraction, results ready before next message. Async: runs in background, faster but may use stale rankings if the narrative pivots.">
-                        Sync: analysis blocks extraction, results ready before next message. Async: runs in background, faster but may use stale rankings if the narrative pivots.
+                    <div class="rp-mem-embeddings-hint" data-i18n="Sync (unchecked): analyzes goals before each generation so the model always sees fresh goal rankings. Adds one LLM call per message. Async (checked): analyzes in background after extraction only — faster, but rankings may lag by a turn.">
+                        Sync (unchecked): analyzes goals before each generation so the model always sees fresh goal rankings. Adds one LLM call per message. Async (checked): analyzes in background after extraction only — faster, but rankings may lag by a turn.
                     </div>
 
                     <label data-i18n="Goal Analysis Model">Goal Analysis Model</label>

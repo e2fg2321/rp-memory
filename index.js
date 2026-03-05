@@ -1265,6 +1265,38 @@ async function onNewMessage(_chatId, type) {
 }
 
 /**
+ * Pre-generation hook for sync-mode goal intent analysis.
+ * Fires on GENERATION_STARTED — before the main model sees the prompt.
+ * Analyzes current goals against recent messages, ranks them, and
+ * updates the injection prompt so the model gets fresh goal context.
+ *
+ * @param {object} data - { type, contextSize, abort }
+ */
+async function onPreGeneration(data) {
+    const s = getSettings();
+    if (!s.enabled || !s.goalsIntentEnabled || s.goalsIntentAsync) return;
+
+    // Skip non-normal generation types (quiet prompts, impersonate, etc.)
+    if (data?.type && data.type !== 'normal' && data.type !== 'continue') return;
+
+    const goals = memoryStore.getAllEntities('goals');
+    if (Object.keys(goals).length === 0) return;
+
+    try {
+        const context = getContext();
+        const recentMsgs = getRecentMessageTexts(context, s.messagesPerExtraction * 2);
+        if (recentMsgs.length === 0) return;
+
+        const currentTurn = memoryStore.getTurnCounter();
+        await goalsManager.analyze(recentMsgs, currentTurn);
+        await injectMemoryPrompt();
+        debugLog('Pre-generation goal analysis complete, prompt updated');
+    } catch (err) {
+        console.warn('[RP Memory] Pre-generation goal analysis failed:', err.message);
+    }
+}
+
+/**
  * Async extraction orchestrator. Non-blocking.
  */
 async function triggerExtraction(context) {
@@ -1298,34 +1330,23 @@ async function triggerExtraction(context) {
         memoryStore.pruneEvents(6, 10);
         goalsManager.prune(memoryStore.getTurnCounter());
 
-        // Run goal intent analysis if enabled
-        if (getSettings().goalsIntentEnabled) {
+        // Async-mode goal analysis: fire in background post-extraction.
+        // Sync-mode analysis runs pre-generation via GENERATION_STARTED hook instead.
+        if (getSettings().goalsIntentEnabled && getSettings().goalsIntentAsync) {
             const turnAtStart = memoryStore.getTurnCounter();
             const recentMsgs = getRecentMessageTexts(context, getSettings().messagesPerExtraction * 2);
 
-            if (getSettings().goalsIntentAsync) {
-                // Async mode: fire in background, results used on next injection cycle
-                goalsManager.analyze(recentMsgs, turnAtStart).then(() => {
-                    // Staleness guard: discard if turn has advanced since we started
-                    if (memoryStore.getTurnCounter() !== turnAtStart) {
-                        goalsManager.clearAnalysis();
-                        debugLog('Goal intent analysis discarded (turn advanced)');
-                        return;
-                    }
-                    // Re-inject with fresh goal rankings
-                    injectMemoryPrompt();
-                    debugLog('Goal intent analysis complete (async), prompt re-injected');
-                }).catch(err => {
-                    console.warn('[RP Memory] Goal intent analysis failed (async):', err.message);
-                });
-            } else {
-                // Sync mode: block until analysis completes, results included in this cycle's injection
-                try {
-                    await goalsManager.analyze(recentMsgs, turnAtStart);
-                } catch (err) {
-                    console.warn('[RP Memory] Goal intent analysis failed:', err.message);
+            goalsManager.analyze(recentMsgs, turnAtStart).then(() => {
+                if (memoryStore.getTurnCounter() !== turnAtStart) {
+                    goalsManager.clearAnalysis();
+                    debugLog('Goal intent analysis discarded (turn advanced)');
+                    return;
                 }
-            }
+                injectMemoryPrompt();
+                debugLog('Goal intent analysis complete (async), prompt re-injected');
+            }).catch(err => {
+                console.warn('[RP Memory] Goal intent analysis failed (async):', err.message);
+            });
         }
 
         debugLog('Extraction complete');
@@ -1458,30 +1479,22 @@ async function forceExtract() {
         memoryStore.pruneEvents(6, 10);
         goalsManager.prune(memoryStore.getTurnCounter());
 
-        // Run goal intent analysis if enabled
-        if (s.goalsIntentEnabled) {
+        // Async-mode goal analysis post-extraction (sync mode uses GENERATION_STARTED hook)
+        if (s.goalsIntentEnabled && s.goalsIntentAsync) {
             const turnAtStart = memoryStore.getTurnCounter();
             const recentMsgs = getRecentMessageTexts(context, s.messagesPerExtraction * 2);
 
-            if (s.goalsIntentAsync) {
-                goalsManager.analyze(recentMsgs, turnAtStart).then(() => {
-                    if (memoryStore.getTurnCounter() !== turnAtStart) {
-                        goalsManager.clearAnalysis();
-                        debugLog('Goal intent analysis discarded (turn advanced)');
-                        return;
-                    }
-                    injectMemoryPrompt();
-                    debugLog('Goal intent analysis complete (async), prompt re-injected');
-                }).catch(err => {
-                    console.warn('[RP Memory] Goal intent analysis failed (async):', err.message);
-                });
-            } else {
-                try {
-                    await goalsManager.analyze(recentMsgs, turnAtStart);
-                } catch (err) {
-                    console.warn('[RP Memory] Goal intent analysis failed:', err.message);
+            goalsManager.analyze(recentMsgs, turnAtStart).then(() => {
+                if (memoryStore.getTurnCounter() !== turnAtStart) {
+                    goalsManager.clearAnalysis();
+                    debugLog('Goal intent analysis discarded (turn advanced)');
+                    return;
                 }
-            }
+                injectMemoryPrompt();
+                debugLog('Goal intent analysis complete (async), prompt re-injected');
+            }).catch(err => {
+                console.warn('[RP Memory] Goal intent analysis failed (async):', err.message);
+            });
         }
 
         const label = extractedCount > 0 ? tt`Last ${extractedCount} exchanges extracted` : tt`Full history extracted`;
@@ -2454,6 +2467,10 @@ jQuery(async function () {
         eventSource.on(event_types.CHARACTER_MESSAGE_RENDERED, onNewMessage);
         eventSource.on(event_types.MESSAGE_DELETED, () => { lastProcessedLength = getContext().chat?.length || 0; });
         eventSource.on(event_types.MESSAGE_UPDATED, () => { injectMemoryPrompt(); });
+
+        // Sync-mode goal analysis: runs before each generation so the
+        // injection prompt has fresh goal rankings when the model sees it
+        eventSource.on(event_types.GENERATION_STARTED, onPreGeneration);
 
         // Init searchable model picker + load model lists (non-blocking)
         bindModelPicker();
