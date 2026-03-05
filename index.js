@@ -1485,6 +1485,10 @@ async function forceExtract() {
 
         memoryStore.setLastExtractionTurn(memoryStore.getTurnCounter());
 
+        // Apply decay so retrospectively extracted entities get correct importance
+        decayEngine.applyDecay(memoryStore, memoryStore.getTurnCounter());
+        goalsManager.applyDecay(memoryStore.getTurnCounter());
+
         // Enforce beat cap
         const maxBeats = s.maxBeats || 200;
         memoryStore.enforceMaxBeats(maxBeats);

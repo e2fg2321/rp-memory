@@ -232,8 +232,11 @@ export class ExtractionPipeline {
             for (let ci = 0; ci < chunks.length; ci++) {
                 if (onProgress) onProgress(ci + 1, chunks.length);
 
-                // Advance turn counter per chunk so beats/entities get distinct storyTurns
-                this.memoryStore.incrementTurn();
+                // Advance turn counter by the number of exchanges in this chunk
+                // so the turn scale matches real conversation pace (1 turn ≈ 1 exchange).
+                // Each chunk has ~N messages = ~N/2 exchanges.
+                const exchangesInChunk = Math.max(1, Math.ceil(chunks[ci].length / 2));
+                this.memoryStore.advanceTurn(exchangesInChunk);
 
                 const formattedTarget = this._formatMessages(chunks[ci], context.name1, context.name2, settings);
                 const formattedContext = ci > 0

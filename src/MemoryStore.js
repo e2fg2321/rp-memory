@@ -128,6 +128,10 @@ export class MemoryStore {
         this._state.turnCounter++;
     }
 
+    advanceTurn(n) {
+        this._state.turnCounter += n;
+    }
+
     getLastExtractionTurn() {
         return this._state.lastExtractionTurn;
     }
