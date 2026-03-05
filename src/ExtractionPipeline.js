@@ -36,6 +36,7 @@ export class ExtractionPipeline {
         this.getLang = getLang || (() => 'en');
         this._abortController = null;
         this._batchMode = false;
+        this.goalsManager = null; // Set externally after construction
     }
 
     /**
@@ -86,6 +87,9 @@ export class ExtractionPipeline {
         }
 
         if (result) {
+            // Pre-merge: run semantic dedup for goals if GoalsManager is available
+            await this._runGoalDedup(result.goals);
+
             let mergeCount = 0;
             for (const category of CATEGORIES) {
                 const entities = result[category];
@@ -101,6 +105,9 @@ export class ExtractionPipeline {
                     }
                 }
             }
+
+            // Clean up dedup results
+            this._pendingGoalDedups = null;
 
             // Process beats (Layer 2)
             if (Array.isArray(result.beats) && result.beats.length > 0) {
@@ -166,6 +173,9 @@ export class ExtractionPipeline {
         }
 
         if (result) {
+            // Pre-merge: run semantic dedup for goals
+            await this._runGoalDedup(result.goals);
+
             for (const category of CATEGORIES) {
                 const entities = result[category];
                 if (entities?.length) {
@@ -179,6 +189,8 @@ export class ExtractionPipeline {
                     }
                 }
             }
+
+            this._pendingGoalDedups = null;
 
             // Process beats
             if (Array.isArray(result.beats) && result.beats.length > 0) {
@@ -232,6 +244,9 @@ export class ExtractionPipeline {
                 const result = await this._extractAll(formattedTarget, currentState, context, scenarioContext, formattedContext);
 
                 if (result) {
+                    // Pre-merge: run semantic dedup for goals
+                    await this._runGoalDedup(result.goals);
+
                     for (const category of CATEGORIES) {
                         const entities = result[category];
                         if (entities?.length) {
@@ -245,6 +260,8 @@ export class ExtractionPipeline {
                             }
                         }
                     }
+
+                    this._pendingGoalDedups = null;
 
                     // Process beats
                     if (Array.isArray(result.beats) && result.beats.length > 0) {
@@ -725,6 +742,23 @@ export class ExtractionPipeline {
                 }
             }
 
+            // For goals: check GoalsManager semantic dedup if no match found yet
+            if (!existing && category === 'goals' && this.goalsManager && this._pendingGoalDedups) {
+                const dupId = this._pendingGoalDedups.get(entityId);
+                if (dupId) {
+                    existing = this.memoryStore.getEntity('goals', dupId);
+                    if (existing) {
+                        const newName = (entity.name || '').trim();
+                        if (newName && newName.toLowerCase() !== existing.name.toLowerCase()) {
+                            if (!existing.aliases) existing.aliases = [];
+                            if (!existing.aliases.some(a => a.toLowerCase() === newName.toLowerCase())) {
+                                existing.aliases.push(newName);
+                            }
+                        }
+                    }
+                }
+            }
+
             if (existing) {
                 // Update existing entity
                 const newConflicts = this._detectConflicts(existing, entity, currentTurn);
@@ -740,7 +774,10 @@ export class ExtractionPipeline {
                 });
 
                 // Reinforce: reset decay, restore score, promote Tier 3 → 2 if applicable
-                if (this.decayEngine) {
+                // Goals use GoalsManager for reinforcement; other categories use DecayEngine
+                if (category === 'goals' && this.goalsManager) {
+                    this.goalsManager.reinforce(existing.id, currentTurn, newImportance);
+                } else if (this.decayEngine) {
                     this.decayEngine.reinforce(this.memoryStore, category, existing.id, currentTurn, newImportance);
                 } else {
                     this.memoryStore.updateEntity(category, existing.id, {
@@ -999,5 +1036,39 @@ export class ExtractionPipeline {
         if (importance >= 8) return 1;
         if (importance >= 4) return 2;
         return 3;
+    }
+
+    /**
+     * Run semantic dedup for extracted goals via GoalsManager.
+     * Builds a map of entityId → existingId for duplicates found.
+     * @param {Array|null} goals - extracted goal entities
+     */
+    async _runGoalDedup(goals) {
+        this._pendingGoalDedups = null;
+        if (!goals?.length || !this.goalsManager) return;
+
+        const dedups = new Map();
+        for (const entity of goals) {
+            const entityId = entity.id || generateId(entity.name);
+            // Skip if already known by ID or alias
+            if (this.memoryStore.getEntity('goals', entityId)) continue;
+            if (this.memoryStore.findEntityByAlias('goals', entity.name || entityId)) continue;
+
+            try {
+                const dupId = await this.goalsManager.dedup(entity);
+                if (dupId) {
+                    dedups.set(entityId, dupId);
+                }
+            } catch (err) {
+                // Dedup failure is non-fatal — goal will be created as new
+                if (this.getSettings().debugMode) {
+                    console.debug(`[RP Memory] Goal dedup check failed for "${entity.name}":`, err.message);
+                }
+            }
+        }
+
+        if (dedups.size > 0) {
+            this._pendingGoalDedups = dedups;
+        }
     }
 }

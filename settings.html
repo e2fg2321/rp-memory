@@ -226,6 +226,36 @@
 
                 <hr />
 
+                <label class="checkbox_label">
+                    <input id="rp_memory_goals_intent_enabled" type="checkbox" />
+                    <span data-i18n="Goal Intent Analysis">Goal Intent Analysis</span>
+                </label>
+                <div class="rp-mem-embeddings-hint" data-i18n="When enabled, uses an LLM call after extraction to classify goals by narrative relevance (active, background, stale, completed, abandoned).">
+                    When enabled, uses an LLM call after extraction to classify goals by narrative relevance (active, background, stale, completed, abandoned).
+                </div>
+
+                <div id="rp_memory_goals_intent_model_container" style="display:none;">
+                    <label class="checkbox_label">
+                        <input id="rp_memory_goals_intent_async" type="checkbox" />
+                        <span data-i18n="Run in background (async)">Run in background (async)</span>
+                    </label>
+                    <div class="rp-mem-embeddings-hint" data-i18n="Sync: analysis blocks extraction, results ready before next message. Async: runs in background, faster but may use stale rankings if the narrative pivots.">
+                        Sync: analysis blocks extraction, results ready before next message. Async: runs in background, faster but may use stale rankings if the narrative pivots.
+                    </div>
+
+                    <label data-i18n="Goal Analysis Model">Goal Analysis Model</label>
+                    <div class="rp-mem-model-row">
+                        <select id="rp_memory_goals_intent_model" class="text_pole">
+                            <option value="" data-i18n="Use extraction model">Use extraction model</option>
+                        </select>
+                    </div>
+                    <div class="rp-mem-embeddings-hint" data-i18n="Leave empty to use the main extraction model.">
+                        Leave empty to use the main extraction model.
+                    </div>
+                </div>
+
+                <hr />
+
                 <label data-i18n="Language">Language</label>
                 <select id="rp_memory_language" class="text_pole">
                     <option value="auto" data-i18n="Auto-detect">Auto-detect</option>

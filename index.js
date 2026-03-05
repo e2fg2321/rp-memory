@@ -13,6 +13,7 @@ import { OpenRouterClient } from './src/OpenRouterClient.js';
 import { EmbeddingService } from './src/EmbeddingService.js';
 import { LanguageDetector } from './src/LanguageDetector.js';
 import { ReflectionEngine } from './src/ReflectionEngine.js';
+import { GoalsManager } from './src/GoalsManager.js';
 import { createEmptyEntity, generateId, unwrapField, wrapField } from './src/Utils.js';
 
 const MODULE_NAME = 'rp_memory';
@@ -44,6 +45,10 @@ const defaultSettings = {
     maxReflections: 30,
     beatBudgetPercent: 25,
     reflectionBudgetPercent: 15,
+    beatContextRadius: 2,
+    goalsIntentEnabled: false,
+    goalsIntentModel: '',
+    goalsIntentAsync: false,
 };
 
 // Singletons
@@ -54,6 +59,7 @@ let pipeline = null;
 let decayEngine = null;
 let embeddingService = null;
 let reflectionEngine = null;
+let goalsManager = null;
 let lastProcessedLength = 0;
 let cachedModelList = null;
 let cachedEmbeddingModelList = null;
@@ -228,6 +234,10 @@ function syncUIFromSettings() {
     $('#rp_memory_embeddings_enabled').prop('checked', s.embeddingsEnabled);
     $('#rp_memory_embedding_model_container').toggle(s.embeddingsEnabled);
     $('#rp_memory_embedding_model').val(s.embeddingModel);
+    $('#rp_memory_goals_intent_enabled').prop('checked', s.goalsIntentEnabled);
+    $('#rp_memory_goals_intent_model_container').toggle(s.goalsIntentEnabled);
+    $('#rp_memory_goals_intent_async').prop('checked', s.goalsIntentAsync);
+    $('#rp_memory_goals_intent_model').val(s.goalsIntentModel);
     $('#rp_memory_language').val(s.language);
 }
 
@@ -318,6 +328,29 @@ function bindSettingsListeners() {
 
     // Refresh embedding models button
     $('#rp_memory_refresh_embedding_models').on('click', () => loadEmbeddingModelList(true));
+
+    // Goals intent toggle
+    $('#rp_memory_goals_intent_enabled').on('change', function () {
+        const checked = $(this).prop('checked');
+        getSettings().goalsIntentEnabled = checked;
+        $('#rp_memory_goals_intent_model_container').toggle(checked);
+        saveSettingsDebounced();
+        if (checked) {
+            populateGoalsIntentModelDropdown();
+        }
+    });
+
+    // Goals intent async toggle
+    $('#rp_memory_goals_intent_async').on('change', function () {
+        getSettings().goalsIntentAsync = $(this).prop('checked');
+        saveSettingsDebounced();
+    });
+
+    // Goals intent model selection
+    $('#rp_memory_goals_intent_model').on('change', function () {
+        getSettings().goalsIntentModel = $(this).val();
+        saveSettingsDebounced();
+    });
 
     // Language
     $('#rp_memory_language').on('change', function () {
@@ -543,21 +576,30 @@ async function injectMemoryPrompt() {
                 }
 
                 // Exclude tier-3 (archived) entities from injection — they stay in UI but are noise in the prompt
-                const injectionRanked = ranked.filter(item => item.entity.tier !== 3);
-                promptText = injector.format(memoryStore, injectionRanked, sceneType, currentTurn, rankedBeats, rankedReflections);
-                debugLog('Embedding-based injection:', injectionRanked.length, '/', ranked.length, 'entities (excluded', ranked.length - injectionRanked.length, 'tier-3), scene:', sceneType);
+                // Replace generic goal entries with GoalsManager-ranked goals
+                const injectionRanked = ranked.filter(item => item.entity.tier !== 3 && item.category !== 'goals');
+                const rankedGoals = goalsManager.getRankedGoals(currentTurn);
+                const goalBeats = goalsManager.getGoalBeats(rankedGoals.map(g => g.entity.id));
+                promptText = injector.format(memoryStore, injectionRanked, sceneType, currentTurn, rankedBeats, rankedReflections, rankedGoals, goalBeats);
+                debugLog('Embedding-based injection:', injectionRanked.length, '/', ranked.length, 'entities (excluded', ranked.length - injectionRanked.length, 'tier-3), scene:', sceneType, ', goals:', rankedGoals.length);
             } else {
                 const reflections = memoryStore.getRecentReflections(5);
-                promptText = injector.format(memoryStore, null, null, currentTurn, null, reflections);
+                const rankedGoals = goalsManager.getRankedGoals(currentTurn);
+                const goalBeats = goalsManager.getGoalBeats(rankedGoals.map(g => g.entity.id));
+                promptText = injector.format(memoryStore, null, null, currentTurn, null, reflections, rankedGoals, goalBeats);
             }
         } catch (err) {
             console.warn('[RP Memory] Embedding ranking failed, falling back to full injection:', err.message);
             const reflections = memoryStore.getRecentReflections(5);
-            promptText = injector.format(memoryStore, null, null, currentTurn, null, reflections);
+            const rankedGoals = goalsManager.getRankedGoals(currentTurn);
+            const goalBeats = goalsManager.getGoalBeats(rankedGoals.map(g => g.entity.id));
+            promptText = injector.format(memoryStore, null, null, currentTurn, null, reflections, rankedGoals, goalBeats);
         }
     } else {
         const reflections = memoryStore.getRecentReflections(5);
-        promptText = injector.format(memoryStore, null, null, currentTurn, null, reflections);
+        const rankedGoals = goalsManager.getRankedGoals(currentTurn);
+        const goalBeats = goalsManager.getGoalBeats(rankedGoals.map(g => g.entity.id));
+        promptText = injector.format(memoryStore, null, null, currentTurn, null, reflections, rankedGoals, goalBeats);
     }
 
     if (s.debugMode && promptText) {
@@ -1212,6 +1254,7 @@ async function onNewMessage(_chatId, type) {
 
     // Run decay (synchronous, pure math)
     decayEngine.applyDecay(memoryStore, memoryStore.getTurnCounter());
+    goalsManager.applyDecay(memoryStore.getTurnCounter());
 
     // Kick off async extraction — does NOT block chat
     triggerExtraction(context).catch(err => {
@@ -1253,7 +1296,37 @@ async function triggerExtraction(context) {
 
         // Prune low-importance events and completed/stale goals
         memoryStore.pruneEvents(6, 10);
-        memoryStore.pruneGoals(5, memoryStore.getTurnCounter());
+        goalsManager.prune(memoryStore.getTurnCounter());
+
+        // Run goal intent analysis if enabled
+        if (getSettings().goalsIntentEnabled) {
+            const turnAtStart = memoryStore.getTurnCounter();
+            const recentMsgs = getRecentMessageTexts(context, getSettings().messagesPerExtraction * 2);
+
+            if (getSettings().goalsIntentAsync) {
+                // Async mode: fire in background, results used on next injection cycle
+                goalsManager.analyze(recentMsgs, turnAtStart).then(() => {
+                    // Staleness guard: discard if turn has advanced since we started
+                    if (memoryStore.getTurnCounter() !== turnAtStart) {
+                        goalsManager.clearAnalysis();
+                        debugLog('Goal intent analysis discarded (turn advanced)');
+                        return;
+                    }
+                    // Re-inject with fresh goal rankings
+                    injectMemoryPrompt();
+                    debugLog('Goal intent analysis complete (async), prompt re-injected');
+                }).catch(err => {
+                    console.warn('[RP Memory] Goal intent analysis failed (async):', err.message);
+                });
+            } else {
+                // Sync mode: block until analysis completes, results included in this cycle's injection
+                try {
+                    await goalsManager.analyze(recentMsgs, turnAtStart);
+                } catch (err) {
+                    console.warn('[RP Memory] Goal intent analysis failed:', err.message);
+                }
+            }
+        }
 
         debugLog('Extraction complete');
         toastr.success(tt`Memory updated`, 'RP Memory', { timeOut: 2000 });
@@ -1383,7 +1456,33 @@ async function forceExtract() {
 
         // Prune low-importance events and completed/stale goals
         memoryStore.pruneEvents(6, 10);
-        memoryStore.pruneGoals(5, memoryStore.getTurnCounter());
+        goalsManager.prune(memoryStore.getTurnCounter());
+
+        // Run goal intent analysis if enabled
+        if (s.goalsIntentEnabled) {
+            const turnAtStart = memoryStore.getTurnCounter();
+            const recentMsgs = getRecentMessageTexts(context, s.messagesPerExtraction * 2);
+
+            if (s.goalsIntentAsync) {
+                goalsManager.analyze(recentMsgs, turnAtStart).then(() => {
+                    if (memoryStore.getTurnCounter() !== turnAtStart) {
+                        goalsManager.clearAnalysis();
+                        debugLog('Goal intent analysis discarded (turn advanced)');
+                        return;
+                    }
+                    injectMemoryPrompt();
+                    debugLog('Goal intent analysis complete (async), prompt re-injected');
+                }).catch(err => {
+                    console.warn('[RP Memory] Goal intent analysis failed (async):', err.message);
+                });
+            } else {
+                try {
+                    await goalsManager.analyze(recentMsgs, turnAtStart);
+                } catch (err) {
+                    console.warn('[RP Memory] Goal intent analysis failed:', err.message);
+                }
+            }
+        }
 
         const label = extractedCount > 0 ? tt`Last ${extractedCount} exchanges extracted` : tt`Full history extracted`;
         debugLog('Manual extraction complete');
@@ -1628,6 +1727,41 @@ function populateEmbeddingModelDropdown(models, preserveValue) {
         $select.val(currentVal);
     } else if (models.length > 0) {
         if (currentVal) {
+            $select.prepend(`<option value="${escapeHtml(currentVal)}">${escapeHtml(currentVal)} (saved)</option>`);
+            $select.val(currentVal);
+        }
+    }
+}
+
+/**
+ * Populate the goals intent model dropdown, reusing the cached model list.
+ */
+function populateGoalsIntentModelDropdown() {
+    const $select = $('#rp_memory_goals_intent_model');
+    const currentVal = $select.val() || getSettings().goalsIntentModel || '';
+    $select.empty();
+
+    // First option: use extraction model (empty value)
+    $select.append(`<option value="">${escapeHtml(tt`Use extraction model`)}</option>`);
+
+    const models = cachedModelList;
+    if (!models || models.length === 0) {
+        // Try to load models if not cached
+        loadModelList().then(() => populateGoalsIntentModelDropdown());
+        return;
+    }
+
+    for (const model of models) {
+        const pricePerMillion = parseFloat(model.promptPrice || 0) * 1_000_000;
+        const priceStr = pricePerMillion < 0.01 ? 'free' : `$${pricePerMillion.toFixed(2)}/1M`;
+        const label = `${model.name || model.id} — ${priceStr}`;
+        $select.append(`<option value="${escapeHtml(model.id)}">${escapeHtml(label)}</option>`);
+    }
+
+    if (currentVal) {
+        if ($select.find(`option[value="${CSS.escape(currentVal)}"]`).length) {
+            $select.val(currentVal);
+        } else {
             $select.prepend(`<option value="${escapeHtml(currentVal)}">${escapeHtml(currentVal)} (saved)</option>`);
             $select.val(currentVal);
         }
@@ -2303,6 +2437,8 @@ jQuery(async function () {
         pipeline = new ExtractionPipeline(apiClient, memoryStore, () => getSettings(), decayEngine, getPromptLanguage);
         embeddingService = new EmbeddingService(apiClient, () => getSettings(), getPromptLanguage);
         reflectionEngine = new ReflectionEngine(apiClient, memoryStore, () => getSettings(), getPromptLanguage);
+        goalsManager = new GoalsManager(memoryStore, embeddingService, apiClient, () => getSettings(), getPromptLanguage);
+        pipeline.goalsManager = goalsManager;
 
         // Sync UI
         syncUIFromSettings();

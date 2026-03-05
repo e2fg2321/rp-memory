@@ -1,4 +1,4 @@
-const DECAYABLE_CATEGORIES = ['characters', 'locations', 'goals', 'events'];
+const DECAYABLE_CATEGORIES = ['characters', 'locations', 'events'];
 
 export class DecayEngine {
     constructor(getSettings) {

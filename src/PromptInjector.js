@@ -98,20 +98,22 @@ export class PromptInjector {
      * @param {number} currentTurn - current story turn for fallback scoring
      * @param {Array|null} rankedBeats - ranked beats from embedding service
      * @param {Array|null} reflections - reflections to inject
+     * @param {Array|null} rankedGoals - pre-ranked goals from GoalsManager
+     * @param {Map|null} goalBeats - goal-adjacent beats from GoalsManager (goalId → beat[])
      * @returns {string}
      */
-    format(memoryStore, relevantEntities = null, sceneType = null, currentTurn = 0, rankedBeats = null, reflections = null) {
+    format(memoryStore, relevantEntities = null, sceneType = null, currentTurn = 0, rankedBeats = null, reflections = null, rankedGoals = null, goalBeats = null) {
         if (relevantEntities !== null) {
-            return this._formatWithBudget(relevantEntities, sceneType, rankedBeats, reflections);
+            return this._formatWithBudget(relevantEntities, sceneType, rankedBeats, reflections, memoryStore, rankedGoals, goalBeats);
         }
-        return this._formatAll(memoryStore, currentTurn, rankedBeats, reflections);
+        return this._formatAll(memoryStore, currentTurn, rankedBeats, reflections, rankedGoals, goalBeats);
     }
 
     /**
      * Fallback: format all entities with tri-score-like ordering.
      * Includes all entities (not just Tier 1-2), sorted by score.
      */
-    _formatAll(memoryStore, currentTurn = 0, rankedBeats = null, reflections = null) {
+    _formatAll(memoryStore, currentTurn = 0, rankedBeats = null, reflections = null, rankedGoals = null, goalBeats = null) {
         const budget = this.getSettings().tokenBudget;
         const l = this.labels;
 
@@ -136,7 +138,7 @@ export class PromptInjector {
         allEntities.sort((a, b) => b.score - a.score);
 
         if (budget > 0) {
-            return this._formatWithBudget(allEntities, null, rankedBeats, reflections);
+            return this._formatWithBudget(allEntities, null, rankedBeats, reflections, null, rankedGoals, goalBeats);
         }
 
         // No budget — include everything
@@ -162,9 +164,14 @@ export class PromptInjector {
             sections.push(this._formatLocations(locations));
         }
 
-        const goals = this._getSortedEntities(memoryStore, 'goals');
-        if (goals.length > 0) {
-            sections.push(this._formatGoals(goals));
+        if (rankedGoals && rankedGoals.length > 0) {
+            const goalEntities = rankedGoals.map(g => g.entity);
+            sections.push(this._formatGoals(goalEntities, null, goalBeats));
+        } else {
+            const goals = this._getSortedEntities(memoryStore, 'goals');
+            if (goals.length > 0) {
+                sections.push(this._formatGoals(goals));
+            }
         }
 
         const events = this._getSortedEntities(memoryStore, 'events');
@@ -225,7 +232,7 @@ export class PromptInjector {
      * Pass 1: Guarantee minimum entities per category.
      * Pass 2: Fill remaining budget with highest-scored entities.
      */
-    _formatWithBudget(relevantEntities, sceneType = null, rankedBeats = null, reflections = null) {
+    _formatWithBudget(relevantEntities, sceneType = null, rankedBeats = null, reflections = null, memoryStore = null, rankedGoals = null, goalBeats = null) {
         const settings = this.getSettings();
         const budget = settings.tokenBudget;
         const beatBudgetPercent = settings.beatBudgetPercent || 25;
@@ -345,20 +352,25 @@ export class PromptInjector {
         if (included.locations.length > 0) {
             sections.push(this._formatLocations(included.locations, fieldMaps.locations));
         }
-        if (included.goals.length > 0) {
+        if (rankedGoals && rankedGoals.length > 0) {
+            const goalEntities = rankedGoals.map(g => g.entity);
+            sections.push(this._formatGoals(goalEntities, null, goalBeats));
+        } else if (included.goals.length > 0) {
             sections.push(this._formatGoals(included.goals, fieldMaps.goals));
         }
         if (included.events.length > 0) {
             sections.push(this._formatEvents(included.events, fieldMaps.events));
         }
 
-        // Beats section
+        // Beats section (with context expansion)
         if (rankedBeats && rankedBeats.length > 0) {
-            const beats = rankedBeats.map(rb => rb.beat || rb).slice(0, 8);
-            const beatsText = this._formatBeats(beats);
-            const beatsTokens = estimateTokens(beatsText);
-            if (beatsTokens <= beatBudget || budget <= 0) {
-                sections.push(beatsText);
+            const expandedBeats = this._expandBeatContext(rankedBeats, memoryStore, beatBudget, budget <= 0);
+            if (expandedBeats.length > 0) {
+                const beatsText = this._formatExpandedBeats(expandedBeats);
+                const beatsTokens = estimateTokens(beatsText);
+                if (beatsTokens <= beatBudget || budget <= 0) {
+                    sections.push(beatsText);
+                }
             }
         }
 
@@ -534,10 +546,13 @@ export class PromptInjector {
         return lines.join('\n');
     }
 
-    _formatGoals(goals, allowedFieldsMap = null) {
+    _formatGoals(goals, allowedFieldsMap = null, goalBeats = null) {
         const l = this.labels;
         const lines = [`## ${l.activeGoals}`];
-        goals.sort((a, b) => (b.importance - a.importance));
+        // Only sort by importance if no pre-ranked order was provided
+        if (!goalBeats) {
+            goals.sort((a, b) => (b.importance - a.importance));
+        }
 
         for (const g of goals) {
             const ok = (field) => this._isFieldAllowed(allowedFieldsMap, g.id, field);
@@ -546,6 +561,16 @@ export class PromptInjector {
             lines.push(`- ${g.name} [${ok('status') ? status : 'in_progress'}]: ${ok('description') ? desc : l.noDescription}`);
             if (ok('progress') && this._str(g.fields.progress)) lines.push(`  ${l.progress}: ${this._str(g.fields.progress)}`);
             if (ok('blockers') && this._str(g.fields.blockers)) lines.push(`  ${l.blockers}: ${this._str(g.fields.blockers)}`);
+
+            // Render goal-adjacent beats inline
+            if (goalBeats) {
+                const beats = goalBeats.get?.(g.id);
+                if (beats && beats.length > 0) {
+                    for (const beat of beats) {
+                        lines.push(`  Context: [${l.turn} ${beat.storyTurn}] ${beat.text}`);
+                    }
+                }
+            }
         }
 
         return lines.join('\n');
@@ -631,5 +656,128 @@ export class PromptInjector {
         }
 
         return lines.join('\n');
+    }
+
+    /**
+     * Expand ranked beat anchors with surrounding context beats.
+     * Picks top anchors, then greedily adds ±beatContextRadius neighbors
+     * by storyTurn until the token budget is filled.
+     *
+     * @param {Array<{beat, score}>} rankedBeats - scored beats from embedding service
+     * @param {object|null} memoryStore - memory store for full beat list
+     * @param {number} beatBudget - token budget for beats section
+     * @param {boolean} unlimited - true when no budget limit applies
+     * @returns {Array<{beat, isAnchor: boolean}>}
+     */
+    _expandBeatContext(rankedBeats, memoryStore, beatBudget, unlimited) {
+        const settings = this.getSettings();
+        const radius = settings.beatContextRadius ?? 2;
+
+        // Extract anchor beats (top 6 to leave room for context)
+        const anchors = rankedBeats.slice(0, 6).map(rb => rb.beat || rb);
+        const selectedIds = new Set(anchors.map(b => b.id));
+        const selected = anchors.map(b => ({ beat: b, isAnchor: true }));
+
+        // Graceful degradation: no memoryStore or no radius → anchors only
+        if (!memoryStore || radius <= 0) {
+            return selected;
+        }
+
+        // Build storyTurn → beats[] index from all beats
+        const allBeats = memoryStore.getBeats();
+        const turnIndex = new Map();
+        for (const beat of allBeats) {
+            const turn = beat.storyTurn;
+            if (!turnIndex.has(turn)) {
+                turnIndex.set(turn, []);
+            }
+            turnIndex.get(turn).push(beat);
+        }
+
+        // Track token usage for budget enforcement
+        let usedTokens = this._estimateBeatsTokens(selected);
+
+        // Expand each anchor in score order (highest-scored anchor first)
+        for (const anchor of anchors) {
+            const anchorTurn = anchor.storyTurn;
+
+            // Expand inner distances first (dist=1 before dist=2)
+            for (let dist = 1; dist <= radius; dist++) {
+                const neighborTurns = [anchorTurn - dist, anchorTurn + dist];
+
+                for (const turn of neighborTurns) {
+                    const beatsAtTurn = turnIndex.get(turn);
+                    if (!beatsAtTurn) continue;
+
+                    for (const beat of beatsAtTurn) {
+                        if (selectedIds.has(beat.id)) continue;
+
+                        // Check budget before adding
+                        const candidateTokens = this._estimateBeatsTokens([{ beat, isAnchor: false }]);
+                        if (!unlimited && (usedTokens + candidateTokens) > beatBudget) {
+                            continue; // A shorter neighbor at same distance may still fit
+                        }
+
+                        selected.push({ beat, isAnchor: false });
+                        selectedIds.add(beat.id);
+                        usedTokens += candidateTokens;
+                    }
+                }
+            }
+        }
+
+        // Sort final selection chronologically by storyTurn
+        selected.sort((a, b) => a.beat.storyTurn - b.beat.storyTurn);
+
+        return selected;
+    }
+
+    /**
+     * Format expanded beats with anchor/context distinction and cluster gaps.
+     * Anchors:  `- [Turn X] text (participants)`
+     * Context:  `  ~ [Turn X] text (participants)`
+     * Blank line between clusters when turn gap > 3.
+     *
+     * @param {Array<{beat, isAnchor: boolean}>} expandedBeats
+     * @returns {string}
+     */
+    _formatExpandedBeats(expandedBeats) {
+        const l = this.labels;
+        const lines = [`## ${l.storyBeats}`];
+        let prevTurn = null;
+
+        for (const { beat, isAnchor } of expandedBeats) {
+            // Insert blank line for cluster gap
+            if (prevTurn !== null && (beat.storyTurn - prevTurn) > 3) {
+                lines.push('');
+            }
+
+            const participants = (beat.participants || []).join(', ');
+            const participantStr = participants ? ` (${participants})` : '';
+            const prefix = isAnchor ? '-' : '  ~';
+            lines.push(`${prefix} [${l.turn} ${beat.storyTurn}] ${beat.text}${participantStr}`);
+            prevTurn = beat.storyTurn;
+        }
+
+        return lines.join('\n');
+    }
+
+    /**
+     * Estimate token count for a set of beat entries.
+     * Used during expansion to enforce budget constraints.
+     *
+     * @param {Array<{beat, isAnchor: boolean}>} entries
+     * @returns {number}
+     */
+    _estimateBeatsTokens(entries) {
+        const l = this.labels;
+        let text = '';
+        for (const { beat, isAnchor } of entries) {
+            const participants = (beat.participants || []).join(', ');
+            const participantStr = participants ? ` (${participants})` : '';
+            const prefix = isAnchor ? '-' : '  ~';
+            text += `${prefix} [${l.turn} ${beat.storyTurn}] ${beat.text}${participantStr}\n`;
+        }
+        return estimateTokens(text);
     }
 }
