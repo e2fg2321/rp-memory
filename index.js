@@ -539,6 +539,7 @@ async function injectMemoryPrompt() {
     let promptText;
     const apiKey = await resolveApiKey();
     const currentTurn = memoryStore.getTurnCounter();
+    const narrativeDirection = goalsManager ? goalsManager.getNarrativeDirection(currentTurn) : null;
 
     if (s.embeddingsEnabled && apiKey && embeddingService) {
         try {
@@ -580,26 +581,26 @@ async function injectMemoryPrompt() {
                 const injectionRanked = ranked.filter(item => item.entity.tier !== 3 && item.category !== 'goals');
                 const rankedGoals = goalsManager.getRankedGoals(currentTurn);
                 const goalBeats = goalsManager.getGoalBeats(rankedGoals.map(g => g.entity.id));
-                promptText = injector.format(memoryStore, injectionRanked, sceneType, currentTurn, rankedBeats, rankedReflections, rankedGoals, goalBeats);
+                promptText = injector.format(memoryStore, injectionRanked, sceneType, currentTurn, rankedBeats, rankedReflections, rankedGoals, goalBeats, narrativeDirection);
                 debugLog('Embedding-based injection:', injectionRanked.length, '/', ranked.length, 'entities (excluded', ranked.length - injectionRanked.length, 'tier-3), scene:', sceneType, ', goals:', rankedGoals.length);
             } else {
                 const reflections = memoryStore.getRecentReflections(5);
                 const rankedGoals = goalsManager.getRankedGoals(currentTurn);
                 const goalBeats = goalsManager.getGoalBeats(rankedGoals.map(g => g.entity.id));
-                promptText = injector.format(memoryStore, null, null, currentTurn, null, reflections, rankedGoals, goalBeats);
+                promptText = injector.format(memoryStore, null, null, currentTurn, null, reflections, rankedGoals, goalBeats, narrativeDirection);
             }
         } catch (err) {
             console.warn('[RP Memory] Embedding ranking failed, falling back to full injection:', err.message);
             const reflections = memoryStore.getRecentReflections(5);
             const rankedGoals = goalsManager.getRankedGoals(currentTurn);
             const goalBeats = goalsManager.getGoalBeats(rankedGoals.map(g => g.entity.id));
-            promptText = injector.format(memoryStore, null, null, currentTurn, null, reflections, rankedGoals, goalBeats);
+            promptText = injector.format(memoryStore, null, null, currentTurn, null, reflections, rankedGoals, goalBeats, narrativeDirection);
         }
     } else {
         const reflections = memoryStore.getRecentReflections(5);
         const rankedGoals = goalsManager.getRankedGoals(currentTurn);
         const goalBeats = goalsManager.getGoalBeats(rankedGoals.map(g => g.entity.id));
-        promptText = injector.format(memoryStore, null, null, currentTurn, null, reflections, rankedGoals, goalBeats);
+        promptText = injector.format(memoryStore, null, null, currentTurn, null, reflections, rankedGoals, goalBeats, narrativeDirection);
     }
 
     if (s.debugMode && promptText) {
@@ -1225,6 +1226,13 @@ async function onNewMessage(_chatId, type) {
     const settings = getSettings();
     if (!settings.enabled) return;
 
+    // Clean up OOC injection after regeneration completes
+    if (pendingOOCCleanup && type === 'regenerate') {
+        setExtensionPrompt('rp_memory_ooc', '', extension_prompt_types.IN_CHAT, 0);
+        pendingOOCCleanup = false;
+        debugLog('OOC injection cleared after regeneration');
+    }
+
     // Regeneration / swipe = not a real new turn — just re-inject with current memory
     if (type === 'regenerate' || type === 'swipe') {
         debugLog(`Skipping turn increment (type: ${type})`);
@@ -1835,6 +1843,10 @@ function initFloatingUI() {
             <div class="rp-mem-nav-buttons">${catButtons}</div>
             <div class="rp-mem-nav-sep"></div>
             <div class="rp-mem-nav-actions">
+                <div class="rp-mem-nav-btn rp-mem-nav-ooc-btn" title="${escapeHtml(tt`Author correction`)}">
+                    <i class="fa-solid fa-pen-to-square"></i>
+                    <span>OOC</span>
+                </div>
                 <div class="rp-mem-nav-btn rp-mem-nav-extract-btn" title="${escapeHtml(tt`Extract Now`)}">
                     <i class="fa-solid fa-wand-magic-sparkles"></i>
                     <span>${tt`Extract`}</span>
@@ -1891,6 +1903,12 @@ function bindFloatingNavListeners() {
         } else {
             forceExtract();
         }
+    });
+
+    // OOC button — toggle OOC input overlay
+    $wrapper.on('click', '.rp-mem-nav-ooc-btn', function (e) {
+        e.stopPropagation();
+        toggleOOCOverlay();
     });
 
     // Settings button — open sidebar drawer
@@ -2376,6 +2394,102 @@ function readOverlayFields($dialog, category, existingFields) {
 function closeEditOverlay() {
     $('.rp-mem-edit-overlay').remove();
     $(document).off('keydown.rpMemOverlay');
+}
+
+// ===================== OOC Correction =====================
+
+let pendingOOCCleanup = false;
+
+function toggleOOCOverlay() {
+    const $existing = $('.rp-mem-ooc-overlay');
+    if ($existing.length) {
+        $existing.remove();
+        return;
+    }
+
+    const overlayHtml = `
+    <div class="rp-mem-ooc-overlay">
+        <textarea class="rp-mem-ooc-input" placeholder="${escapeHtml(tt`e.g., Kira's hair should be green, rewrite this`)}" rows="2"></textarea>
+        <div class="rp-mem-ooc-actions">
+            <div class="menu_button rp-mem-ooc-submit"><i class="fa-solid fa-check"></i> ${tt`Submit`}</div>
+            <div class="menu_button rp-mem-ooc-cancel"><i class="fa-solid fa-xmark"></i> ${tt`Cancel`}</div>
+        </div>
+    </div>`;
+
+    const $wrapper = $('.rp-mem-wrapper');
+    $wrapper.find('.rp-mem-nav').before(overlayHtml);
+
+    const $overlay = $wrapper.find('.rp-mem-ooc-overlay');
+    $overlay.find('.rp-mem-ooc-input').focus();
+
+    $overlay.on('click', '.rp-mem-ooc-submit', function () {
+        const text = $overlay.find('.rp-mem-ooc-input').val().trim();
+        $overlay.remove();
+        if (text) handleOOCSubmit(text);
+    });
+
+    $overlay.on('click', '.rp-mem-ooc-cancel', function () {
+        $overlay.remove();
+    });
+
+    $overlay.on('keydown', '.rp-mem-ooc-input', function (e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            const text = $(this).val().trim();
+            $overlay.remove();
+            if (text) handleOOCSubmit(text);
+        }
+        if (e.key === 'Escape') {
+            $overlay.remove();
+        }
+    });
+}
+
+async function handleOOCSubmit(text) {
+    const s = getSettings();
+    if (!s.enabled) {
+        toastr.warning(tt`RP Memory is disabled`);
+        return;
+    }
+
+    debugLog('OOC directive submitted:', text);
+
+    // 1. Inject OOC as temporary system prompt at depth 0
+    const oocPrompt = `[Author Correction: ${text}. Rewrite the last response incorporating this change.]`;
+    setExtensionPrompt(
+        'rp_memory_ooc',
+        oocPrompt,
+        extension_prompt_types.IN_CHAT,
+        0,
+        false,
+        extension_prompt_roles.SYSTEM,
+    );
+
+    // 2. Set cleanup flag
+    pendingOOCCleanup = true;
+
+    // 3. Trigger regeneration
+    $('#option_regenerate').trigger('click');
+
+    // 4. Fire background memory update (non-blocking)
+    const context = getContext();
+    const apiKey = await resolveApiKey();
+    if (apiKey && context.chat?.length) {
+        pipeline.applyOOCDirective(text, context).then(updated => {
+            if (updated) {
+                saveMemoryState();
+                injectMemoryPrompt();
+                renderMemoryUI();
+                debugLog('OOC memory update applied');
+                toastr.success(tt`Memory updated from OOC directive`, 'RP Memory', { timeOut: 2000 });
+            } else {
+                debugLog('OOC memory update: no changes');
+            }
+        }).catch(err => {
+            console.warn('[RP Memory] OOC memory update failed:', err.message);
+            toastr.warning(tt`OOC memory update failed — regeneration still works`, 'RP Memory', { timeOut: 3000 });
+        });
+    }
 }
 
 // ===================== Utilities =====================

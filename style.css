@@ -940,3 +940,56 @@
     background: var(--SmartThemeBorderColor, rgba(255,255,255,0.15));
     border-radius: 3px;
 }
+
+/* ============ OOC Input Overlay ============ */
+.rp-mem-ooc-overlay {
+    padding: 10px 12px;
+    margin-bottom: 6px;
+    border-radius: 12px;
+    background: var(--SmartThemeBlurTintColor, rgba(20, 20, 30, 0.85));
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.08));
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.35);
+    animation: popUp 0.2s ease-out;
+}
+
+.rp-mem-ooc-input {
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.1));
+    border-radius: 8px;
+    background: var(--SmartThemeBlurTintColor, rgba(0,0,0,0.25));
+    color: var(--SmartThemeBodyColor, #eee);
+    font-size: 0.85em;
+    font-family: inherit;
+    box-sizing: border-box;
+    resize: vertical;
+    min-height: 40px;
+    transition: border-color 0.2s;
+}
+
+.rp-mem-ooc-input:focus {
+    outline: none;
+    border-color: var(--SmartThemeQuoteColor, rgba(136, 136, 200, 0.5));
+}
+
+.rp-mem-ooc-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.rp-mem-ooc-actions .menu_button {
+    font-size: 0.8em;
+    padding: 4px 12px;
+    border-radius: 6px;
+}
+
+.rp-mem-ooc-submit {
+    color: #6f6;
+}
+
+.rp-mem-ooc-cancel {
+    color: #f66;
+}

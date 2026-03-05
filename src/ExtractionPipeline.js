@@ -1071,4 +1071,79 @@ export class ExtractionPipeline {
             this._pendingGoalDedups = dedups;
         }
     }
+
+    /**
+     * Apply an OOC (out-of-character) directive from the author.
+     * Parses the directive into entity updates via LLM and merges into memory.
+     * Returns true if updates were applied, false otherwise.
+     */
+    async applyOOCDirective(oocText, context) {
+        const settings = this.getSettings();
+        const lang = this.getLang();
+
+        const currentState = this._buildExtractionState();
+
+        const systemPrompt = lang === 'zh'
+            ? ExtractionPrompts.OOC_SYSTEM_ZH
+            : ExtractionPrompts.OOC_SYSTEM;
+        const userPrompt = ExtractionPrompts.getOOCUserPrompt(
+            oocText,
+            currentState,
+            context.name1,
+            context.name2,
+            lang,
+        );
+
+        const promptMessages = [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+        ];
+
+        this._oocAbortController = new AbortController();
+
+        try {
+            const signal = this._oocAbortController.signal;
+            const response = await this.apiClient.chatCompletion(promptMessages, signal);
+
+            const result = this._parseUnifiedResponse(response);
+            if (!result) {
+                if (settings.debugMode) {
+                    console.debug('[RP Memory] OOC directive produced no parseable result');
+                }
+                return false;
+            }
+
+            const OOC_CATEGORIES = ['characters', 'locations', 'mainCharacter', 'goals', 'events'];
+            let mergeCount = 0;
+
+            for (const category of OOC_CATEGORIES) {
+                const entities = result[category];
+                if (entities?.length) {
+                    if (settings.debugMode) {
+                        console.debug(`[RP Memory] OOC ${category}: ${entities.length} entities`, entities);
+                    }
+                    try {
+                        this._mergeResult(category, { entities });
+                        mergeCount++;
+                    } catch (mergeError) {
+                        console.warn(`[RP Memory] OOC merge failed for ${category}:`, mergeError);
+                    }
+                }
+            }
+
+            if (settings.debugMode) {
+                console.debug(`[RP Memory] OOC directive applied: ${mergeCount} categories updated`);
+            }
+
+            return mergeCount > 0;
+        } catch (error) {
+            if (error.name === 'AbortError') {
+                console.debug('[RP Memory] OOC directive aborted');
+                return false;
+            }
+            throw error;
+        } finally {
+            this._oocAbortController = null;
+        }
+    }
 }

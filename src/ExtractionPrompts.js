@@ -544,6 +544,104 @@ If an entity already exists in the ALL KNOWN ENTITIES list above (including its 
     return parts.join('\n\n');
   }
 
+  // ==================== OOC Directive ====================
+
+  static OOC_SYSTEM = `You are a memory update assistant for a roleplay memory system. The author (user) has issued an out-of-character (OOC) directive — a correction or instruction about the story world.
+
+Parse the directive and output JSON entity updates. Use the SAME format as the extraction system:
+
+{
+  "characters": [ { "id": "kebab-case-id", "name": "Name", "importance": 7, "fields": { ... } } ],
+  "locations": [],
+  "mainCharacter": [],
+  "goals": [],
+  "events": []
+}
+
+RULES:
+- Output ONLY valid JSON. No explanation, no text outside the JSON.
+- Output ONLY the entities/fields that the directive changes or creates.
+- Use empty arrays [] for categories unaffected by the directive.
+- Generate kebab-case IDs from names.
+- Each entity MUST have its data nested inside a "fields" object.
+- If an entity already exists in the current state, use its existing ID and name.
+- Do NOT output beats.`;
+
+  static OOC_SYSTEM_ZH = `你是一个角色扮演记忆系统的记忆更新助手。作者（用户）发出了一条 OOC（角色外）指令 — 关于故事世界的修正或说明。
+
+解析该指令并输出 JSON 实体更新。使用与提取系统相同的格式：
+
+{
+  "characters": [ { "id": "kebab-case-id", "name": "名称", "importance": 7, "fields": { ... } } ],
+  "locations": [],
+  "mainCharacter": [],
+  "goals": [],
+  "events": []
+}
+
+规则：
+- 仅输出有效的 JSON。不要解释，不要在 JSON 之外输出任何文字。
+- 仅输出指令变更或创建的实体/字段。
+- 未受指令影响的类别使用空数组 []。
+- 从名称生成 kebab-case ID。
+- 每个实体必须将数据嵌套在 "fields" 对象中。
+- 如果实体已存在于当前状态中，使用其现有的 ID 和名称。
+- 不要输出 beats。`;
+
+  static getOOCUserPrompt(oocText, currentState, userName, charName, lang = 'en') {
+    const stateSections = [];
+
+    const chars = currentState.characters || {};
+    if (Object.keys(chars).length > 0) stateSections.push(`Characters: ${JSON.stringify(chars)}`);
+
+    const locs = currentState.locations || {};
+    if (Object.keys(locs).length > 0) stateSections.push(`Locations: ${JSON.stringify(locs)}`);
+
+    const mc = currentState.mainCharacter || null;
+    if (mc) stateSections.push(`Main Character: ${JSON.stringify(mc)}`);
+
+    const goals = currentState.goals || {};
+    if (Object.keys(goals).length > 0) stateSections.push(`Goals: ${JSON.stringify(goals)}`);
+
+    const events = currentState.events || {};
+    if (Object.keys(events).length > 0) stateSections.push(`Events: ${JSON.stringify(events)}`);
+
+    const catalog = currentState.entityCatalog || [];
+    const catalogBlock = catalog.length > 0
+      ? `Known entities: ${JSON.stringify(catalog)}`
+      : '';
+
+    const stateBlock = stateSections.length > 0
+      ? stateSections.join('\n')
+      : '(No entities tracked yet)';
+
+    if (lang === 'zh') {
+      return `当前记忆状态：
+${stateBlock}
+${catalogBlock ? '\n' + catalogBlock : ''}
+
+用户角色: "${userName}"
+AI角色: "${charName}"
+
+作者的 OOC 指令:
+${oocText}
+
+解析上述指令，输出需要更新或创建的实体。仅输出变更部分。`;
+    }
+
+    return `CURRENT MEMORY STATE:
+${stateBlock}
+${catalogBlock ? '\n' + catalogBlock : ''}
+
+User character: "${userName}"
+AI character: "${charName}"
+
+AUTHOR'S OOC DIRECTIVE:
+${oocText}
+
+Parse the directive above and output the entity updates needed. Output only changes.`;
+  }
+
   // ==================== Dispatcher ====================
 
   static getSystemPrompt(category) {
