@@ -122,6 +122,8 @@ export class PromptInjector {
         for (const category of categories) {
             const entities = memoryStore.getAllEntities(category);
             for (const entity of Object.values(entities)) {
+                // Skip tier-3 (archived) entities — they stay in UI but are noise in the prompt
+                if (entity.tier === 3 && category !== 'mainCharacter') continue;
                 const turnsSince = currentTurn - (entity.lastMentionedTurn || entity.createdTurn || 0);
                 const recency = 1 / (1 + turnsSince * 0.1);
                 const importance = (entity.importance || 5) / 10;
@@ -192,7 +194,7 @@ export class PromptInjector {
      */
     _getSortedEntities(memoryStore, category) {
         const all = memoryStore.getAllEntities(category);
-        const list = Object.values(all);
+        const list = Object.values(all).filter(e => e.tier !== 3);
         list.sort((a, b) => (a.tier - b.tier) || (b.importance - a.importance));
         return list;
     }
@@ -401,6 +403,42 @@ export class PromptInjector {
      */
     getTokenCount(memoryStore) {
         const text = this.format(memoryStore);
+        return estimateTokens(text);
+    }
+
+    /**
+     * Get the estimated total token count of ALL stored memory
+     * (all tiers, all fields, all beats, all reflections — no filtering).
+     */
+    getTotalStoredTokens(memoryStore) {
+        const l = this.labels;
+        const sections = [];
+
+        const mc = memoryStore.getMainCharacter();
+        if (mc) sections.push(this._formatMainCharacter(mc));
+
+        const categories = ['characters', 'locations', 'goals', 'events'];
+        const formatters = {
+            characters: (list) => this._formatCharacters(list),
+            locations: (list) => this._formatLocations(list),
+            goals: (list) => this._formatGoals(list),
+            events: (list) => this._formatEvents(list),
+        };
+
+        for (const cat of categories) {
+            const all = memoryStore.getAllEntities(cat);
+            const list = Object.values(all);
+            if (list.length > 0) sections.push(formatters[cat](list));
+        }
+
+        const beats = memoryStore.getBeats();
+        if (beats.length > 0) sections.push(this._formatBeats(beats));
+
+        const reflections = memoryStore.getReflections();
+        if (reflections.length > 0) sections.push(this._formatReflections(reflections));
+
+        if (sections.length === 0) return 0;
+        const text = `${l.worldStateOpen}\n${sections.join('\n\n')}\n${l.worldStateClose}`;
         return estimateTokens(text);
     }
 

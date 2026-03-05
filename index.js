@@ -542,8 +542,10 @@ async function injectMemoryPrompt() {
                     rankedReflections = memoryStore.getRecentReflections(5);
                 }
 
-                promptText = injector.format(memoryStore, ranked, sceneType, currentTurn, rankedBeats, rankedReflections);
-                debugLog('Embedding-based injection:', ranked.length, 'entities ranked, scene:', sceneType);
+                // Exclude tier-3 (archived) entities from injection — they stay in UI but are noise in the prompt
+                const injectionRanked = ranked.filter(item => item.entity.tier !== 3);
+                promptText = injector.format(memoryStore, injectionRanked, sceneType, currentTurn, rankedBeats, rankedReflections);
+                debugLog('Embedding-based injection:', injectionRanked.length, '/', ranked.length, 'entities (excluded', ranked.length - injectionRanked.length, 'tier-3), scene:', sceneType);
             } else {
                 const reflections = memoryStore.getRecentReflections(5);
                 promptText = injector.format(memoryStore, null, null, currentTurn, null, reflections);
@@ -573,12 +575,13 @@ async function injectMemoryPrompt() {
 
     // Update token count display
     const tokens = injector.getTokenCount(memoryStore);
+    const totalStored = injector.getTotalStoredTokens(memoryStore);
     const budget = s.tokenBudget;
-    let countText = `~${tokens} tokens`;
+    let countText = `~${tokens} injected / ~${totalStored} stored`;
     if (budget > 0) {
-        countText += ` / ${budget}`;
+        countText += ` (budget: ${budget})`;
         if (tokens > budget) {
-            countText += ' (OVER BUDGET)';
+            countText += ' OVER';
         }
     }
     $('#rp_memory_token_count').text(countText);
@@ -1173,10 +1176,20 @@ async function clearAllMemory() {
 
 /**
  * Called after AI responds. Checks interval, runs decay, triggers async extraction.
+ * @param {number} _chatId - chat message index (from ST event)
+ * @param {string} type - 'normal' | 'regenerate' | 'swipe' | 'continue' | 'append'
  */
-async function onNewMessage() {
+async function onNewMessage(_chatId, type) {
     const settings = getSettings();
     if (!settings.enabled) return;
+
+    // Regeneration / swipe = not a real new turn — just re-inject with current memory
+    if (type === 'regenerate' || type === 'swipe') {
+        debugLog(`Skipping turn increment (type: ${type})`);
+        injectMemoryPrompt();
+        return;
+    }
+
     const apiKey = await resolveApiKey();
     if (!apiKey) return;
 
