@@ -3,6 +3,30 @@ import { unwrapField } from './Utils.js';
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'abandoned']);
 
 const VALID_PACING = ['accelerate', 'maintain', 'slow_down', 'pivot'];
+const VALID_TIMEFRAMES = new Set(['immediate', 'short_term', 'long_term']);
+
+/**
+ * Decay speed multiplier per timeframe.
+ * Applied to turnsSince so higher = decays faster.
+ *   immediate:  1.5× speed  → baseScore 7 hits threshold ~5 turns
+ *   short_term: 1.0× speed  → baseScore 7 hits threshold ~7 turns (default)
+ *   long_term:  0.4× speed  → baseScore 7 hits threshold ~17 turns
+ */
+const TIMEFRAME_DECAY_SCALE = {
+    immediate: 1.5,
+    short_term: 1.0,
+    long_term: 0.4,
+};
+
+/**
+ * Retirement patience multiplier per timeframe.
+ * Multiplied against retireAfterTurns.
+ */
+const TIMEFRAME_RETIRE_SCALE = {
+    immediate: 0.5,    // 25 turns
+    short_term: 1.0,   // 50 turns (default)
+    long_term: 2.5,    // 125 turns
+};
 const VALID_FOCUS = [
     'character_development', 'plot_advancement', 'world_building',
     'relationship_dynamics', 'action_conflict', 'mystery_revelation',
@@ -51,7 +75,9 @@ export class GoalsManager {
             const turnsSince = currentTurn - (entity.lastMentionedTurn || 0);
             if (turnsSince <= 0) continue;
 
-            const effectiveScore = entity.baseScore * Math.pow(decayFactor, turnsSince);
+            const tf = unwrapField(entity.fields?.timeframe) || 'short_term';
+            const scale = TIMEFRAME_DECAY_SCALE[tf] ?? 1.0;
+            const effectiveScore = entity.baseScore * Math.pow(decayFactor, turnsSince * scale);
             const rounded = Math.round(effectiveScore * 10) / 10;
 
             this.memoryStore.updateEntity('goals', entity.id, {
@@ -131,7 +157,9 @@ export class GoalsManager {
             if (retireAfterTurns > 0 && currentTurn > 0 && entity.tier !== 3) {
                 const lastMention = entity.lastMentionedTurn || entity.createdTurn || 0;
                 const turnsSince = currentTurn - lastMention;
-                if (turnsSince >= retireAfterTurns) {
+                const tf = unwrapField(entity.fields?.timeframe) || 'short_term';
+                const retireScale = TIMEFRAME_RETIRE_SCALE[tf] ?? 1.0;
+                if (turnsSince >= retireAfterTurns * retireScale) {
                     this.memoryStore.updateEntity('goals', id, { tier: 3 });
                 }
             }

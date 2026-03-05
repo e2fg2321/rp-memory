@@ -113,6 +113,7 @@ export function createEmptyEntity(category, name, turn = 0) {
                 progress: '',
                 blockers: '',
                 status: 'in_progress',
+                timeframe: 'short_term',
             };
             break;
         case 'events':

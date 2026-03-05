@@ -240,11 +240,17 @@ OUTPUT FORMAT:
         "description": "What needs to be accomplished",
         "progress": "Current progress toward the goal",
         "blockers": "What's preventing progress (if any)",
-        "status": "in_progress"
+        "status": "in_progress",
+        "timeframe": "immediate|short_term|long_term"
       }
     }
   ]
 }
+
+TIMEFRAME GUIDE:
+- "immediate": Must be resolved in the current scene or next few turns (e.g. "escape the collapsing cave", "heal the wound")
+- "short_term": Active pursuit over several scenes (e.g. "find the stolen artifact", "earn enough gold for passage")
+- "long_term": Overarching ambition or campaign-level objective (e.g. "overthrow the tyrant king", "master forbidden magic")
 
 IMPORTANT: Also detect when existing goals are COMPLETED, FAILED, or ABANDONED based on the narrative. Update their status accordingly.
 
@@ -376,7 +382,7 @@ Operations: Update only — never delete, never add a second entity. Always upda
 === CATEGORY 4: goals ===
 Track active goals, quests, and tasks. Also detect when existing goals are COMPLETED, FAILED, or ABANDONED.
 
-Fields: description (what to accomplish), progress (current progress), blockers (what prevents progress), status ("in_progress" | "completed" | "failed" | "abandoned")
+Fields: description (what to accomplish), progress (current progress), blockers (what prevents progress), status ("in_progress" | "completed" | "failed" | "abandoned"), timeframe ("immediate" = this scene/next few turns | "short_term" = several scenes | "long_term" = campaign-level ambition)
 
 Importance: 9-10 main story quest | 6-8 major side quest | 3-5 minor task | 1-2 trivial goal
 
@@ -459,7 +465,7 @@ ${COMMON_RULES_ZH}
 === 类别 4：goals（目标）===
 追踪活跃的目标、任务和待办事项。同时检测现有目标是否已完成、失败或放弃。
 
-字段：description（需要完成的事项）、progress（当前进度）、blockers（阻碍进度的因素）、status（"in_progress" | "completed" | "failed" | "abandoned"）
+字段：description（需要完成的事项）、progress（当前进度）、blockers（阻碍进度的因素）、status（"in_progress" | "completed" | "failed" | "abandoned"）、timeframe（"immediate" = 当前场景/接下来几个回合 | "short_term" = 跨越数个场景 | "long_term" = 战役级别的宏大目标）
 
 重要度：9-10 主线任务 | 6-8 重要支线任务 | 3-5 次要任务 | 1-2 琐碎目标
 

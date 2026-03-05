@@ -29,6 +29,7 @@ const LABELS = {
         features: 'Features',
         progress: 'Progress',
         blockers: 'Blockers',
+        timeframe: 'Timeframe',
         turn: 'Turn',
         consequences: 'Consequences',
         currentLocation: 'Location',
@@ -70,6 +71,7 @@ const LABELS = {
         features: '特征',
         progress: '进度',
         blockers: '阻碍',
+        timeframe: '时间范围',
         turn: '回合',
         consequences: '后果',
         currentLocation: '当前位置',
@@ -623,7 +625,8 @@ export class PromptInjector {
             const ok = (field) => this._isFieldAllowed(allowedFieldsMap, g.id, field);
             const status = this._str(g.fields.status) || 'in_progress';
             const desc = this._str(g.fields.description) || l.noDescription;
-            lines.push(`- ${g.name} [${ok('status') ? status : 'in_progress'}]: ${ok('description') ? desc : l.noDescription}`);
+            const tf = ok('timeframe') && this._str(g.fields.timeframe) ? ` | ${this._str(g.fields.timeframe)}` : '';
+            lines.push(`- ${g.name} [${ok('status') ? status : 'in_progress'}${tf}]: ${ok('description') ? desc : l.noDescription}`);
             if (ok('progress') && this._str(g.fields.progress)) lines.push(`  ${l.progress}: ${this._str(g.fields.progress)}`);
             if (ok('blockers') && this._str(g.fields.blockers)) lines.push(`  ${l.blockers}: ${this._str(g.fields.blockers)}`);
 

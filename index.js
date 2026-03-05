@@ -932,6 +932,11 @@ const FIELD_DEFS = {
             { value: 'failed', label: 'Failed' },
             { value: 'abandoned', label: 'Abandoned' },
         ] },
+        { key: 'timeframe', label: 'Timeframe', type: 'select', options: [
+            { value: 'immediate', label: 'Immediate' },
+            { value: 'short_term', label: 'Short-Term' },
+            { value: 'long_term', label: 'Long-Term' },
+        ] },
     ],
     events: [
         { key: 'description', label: 'Description', type: 'textarea' },

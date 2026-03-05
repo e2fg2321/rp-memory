@@ -53,11 +53,11 @@ export const FIELD_RELEVANCE = {
         downtime: ['health', 'conditions', 'buffs', 'inventory', 'skills', 'currentLocation', 'currentTime'],
     },
     goals: {
-        combat:   ['status', 'description'],
-        social:   ['description', 'progress', 'blockers'],
-        explore:  ['description', 'progress'],
-        plot:     ['description', 'progress', 'blockers', 'status'],
-        downtime: ['description', 'progress', 'blockers', 'status'],
+        combat:   ['status', 'description', 'timeframe'],
+        social:   ['description', 'progress', 'timeframe', 'blockers'],
+        explore:  ['description', 'progress', 'timeframe'],
+        plot:     ['description', 'progress', 'blockers', 'status', 'timeframe'],
+        downtime: ['description', 'progress', 'blockers', 'status', 'timeframe'],
     },
     events: {
         combat:   ['description', 'consequences'],
