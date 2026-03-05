@@ -85,7 +85,8 @@ OUTPUT FORMAT:
       "importance": 7,
       "fields": {
         "description": "Physical appearance and defining traits (concise)",
-        "personality": "Key personality traits observed",
+        "personality": "Key personality traits observed (stable core traits)",
+        "mood": "Current emotional state or disposition (e.g. anxious, cheerful, brooding)",
         "status": "Current state: alive/dead/injured/missing + details",
         "relationships": "string — e.g. 'Kira: romantic tension, Marcus: uneasy alliance'",
         "present": "yes or no — can this character directly interact with the MC right now?"
@@ -332,7 +333,7 @@ IMPORTANT: If a character is already tracked under a different name variant (e.g
 Example:
 {
   "characters": [
-    { "id": "kira-nightshade", "name": "Kira Nightshade", "importance": 7, "fields": { "description": "Tall elf with silver hair", "personality": "Cold but protective", "status": "alive", "present": "yes" } }
+    { "id": "kira-nightshade", "name": "Kira Nightshade", "importance": 7, "fields": { "description": "Tall elf with silver hair", "personality": "Cold but protective", "mood": "tense, vigilant", "status": "alive", "present": "yes" } }
   ],
   "locations": [],
   "mainCharacter": [
@@ -348,7 +349,7 @@ Example:
 === CATEGORY 1: characters (NPCs) ===
 Track NON-PLAYER characters mentioned in the conversation. Do NOT include the user's own character here.
 
-Fields: description (appearance/traits), personality, status (alive/dead/injured/missing + details), relationships (string, e.g. "Kira: romantic tension, Marcus: uneasy alliance"), present ("yes" or "no" — can this character directly interact with the MC right now?)
+Fields: description (appearance/traits), personality (stable core traits — update rarely), mood (current emotional state — update frequently, e.g. "anxious", "cheerful", "brooding"), status (alive/dead/injured/missing + details), relationships (string, e.g. "Kira: romantic tension, Marcus: uneasy alliance"), present ("yes" or "no" — can this character directly interact with the MC right now?)
 
 Importance: 9-10 central plot character/love interest | 6-8 named NPC with plot relevance | 3-5 minor named NPC | 1-2 background character
 
@@ -415,7 +416,7 @@ ${COMMON_RULES_ZH}
 示例：
 {
   "characters": [
-    { "id": "kira-nightshade", "name": "Kira Nightshade", "importance": 7, "fields": { "description": "银发高挑的精灵", "personality": "冷漠但有保护欲", "status": "alive", "present": "yes" } }
+    { "id": "kira-nightshade", "name": "Kira Nightshade", "importance": 7, "fields": { "description": "银发高挑的精灵", "personality": "冷漠但有保护欲", "mood": "紧张、警惕", "status": "alive", "present": "yes" } }
   ],
   "locations": [],
   "mainCharacter": [
@@ -431,7 +432,7 @@ ${COMMON_RULES_ZH}
 === 类别 1：characters（NPC 角色）===
 追踪对话中提到的非玩家角色（NPC）。不要将用户的角色包含在此类别中。
 
-字段：description（外貌/特征）、personality（性格）、status（alive/dead/injured/missing + 详情）、relationships（字符串，例如 "Kira：暧昧关系，Marcus：不稳定的联盟"）、present（"yes" 或 "no" — 该角色现在能否与主角直接互动？）
+字段：description（外貌/特征）、personality（性格 — 稳定核心特质，少更新）、mood（当前情绪状态 — 频繁更新，如"焦虑"、"开朗"、"沉思"）、status（alive/dead/injured/missing + 详情）、relationships（字符串，例如 "Kira：暧昧关系，Marcus：不稳定的联盟"）、present（"yes" 或 "no" — 该角色现在能否与主角直接互动？）
 
 重要度：9-10 核心剧情角色/恋爱对象 | 6-8 有剧情关联的命名NPC | 3-5 次要命名NPC | 1-2 背景角色
 

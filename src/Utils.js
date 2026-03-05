@@ -81,6 +81,7 @@ export function createEmptyEntity(category, name, turn = 0) {
             base.fields = {
                 description: '',
                 personality: '',
+                mood: '',
                 status: '',
                 relationships: '',
             };

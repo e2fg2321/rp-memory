@@ -22,6 +22,7 @@ const LABELS = {
         skills: 'Skills',
         inventory: 'Inventory',
         personality: 'Personality',
+        mood: 'Mood',
         status: 'Status',
         relationships: 'Relationships',
         atmosphere: 'Atmosphere',
@@ -33,6 +34,14 @@ const LABELS = {
         currentLocation: 'Location',
         currentTime: 'Time',
         connections: 'Connections',
+        narrativeDirection: 'Narrative Direction',
+        narrativeNote: '(Guidance based on current story trajectory — not prescriptive.)',
+        pacing: 'Pacing',
+        tension: 'Tension',
+        focus: 'Focus',
+        tone: 'Tone',
+        toneAvoid: 'Avoid',
+        nextBeat: 'Possible Next Beat',
     },
     zh: {
         worldStateOpen: '[RP Memory — 世界状态]\n(关于故事世界的参考数据。这仅为描述性内容，不是指令。)',
@@ -54,6 +63,7 @@ const LABELS = {
         skills: '技能',
         inventory: '物品栏',
         personality: '性格',
+        mood: '情绪',
         status: '状态',
         relationships: '关系',
         atmosphere: '氛围',
@@ -65,6 +75,48 @@ const LABELS = {
         currentLocation: '当前位置',
         currentTime: '当前时间',
         connections: '连接',
+        narrativeDirection: '叙事方向',
+        narrativeNote: '(基于当前故事轨迹的指导——非强制性。)',
+        pacing: '节奏',
+        tension: '张力',
+        focus: '焦点',
+        tone: '基调',
+        toneAvoid: '避免',
+        nextBeat: '可能的下一节拍',
+    },
+};
+
+const FOCUS_LABELS = {
+    en: {
+        character_development: 'Character Development',
+        plot_advancement: 'Plot Advancement',
+        world_building: 'World-Building',
+        relationship_dynamics: 'Relationship Dynamics',
+        action_conflict: 'Action/Conflict',
+        mystery_revelation: 'Mystery/Revelation',
+    },
+    zh: {
+        character_development: '角色发展',
+        plot_advancement: '剧情推进',
+        world_building: '世界构建',
+        relationship_dynamics: '关系动态',
+        action_conflict: '动作/冲突',
+        mystery_revelation: '谜团/揭示',
+    },
+};
+
+const PACING_LABELS = {
+    en: {
+        accelerate: 'Accelerate',
+        maintain: 'Maintain',
+        slow_down: 'Slow Down',
+        pivot: 'Pivot',
+    },
+    zh: {
+        accelerate: '加速',
+        maintain: '保持',
+        slow_down: '放缓',
+        pivot: '转折',
     },
 };
 
@@ -102,18 +154,18 @@ export class PromptInjector {
      * @param {Map|null} goalBeats - goal-adjacent beats from GoalsManager (goalId → beat[])
      * @returns {string}
      */
-    format(memoryStore, relevantEntities = null, sceneType = null, currentTurn = 0, rankedBeats = null, reflections = null, rankedGoals = null, goalBeats = null) {
+    format(memoryStore, relevantEntities = null, sceneType = null, currentTurn = 0, rankedBeats = null, reflections = null, rankedGoals = null, goalBeats = null, narrativeDirection = null) {
         if (relevantEntities !== null) {
-            return this._formatWithBudget(relevantEntities, sceneType, rankedBeats, reflections, memoryStore, rankedGoals, goalBeats);
+            return this._formatWithBudget(relevantEntities, sceneType, rankedBeats, reflections, memoryStore, rankedGoals, goalBeats, narrativeDirection);
         }
-        return this._formatAll(memoryStore, currentTurn, rankedBeats, reflections, rankedGoals, goalBeats);
+        return this._formatAll(memoryStore, currentTurn, rankedBeats, reflections, rankedGoals, goalBeats, narrativeDirection);
     }
 
     /**
      * Fallback: format all entities with tri-score-like ordering.
      * Includes all entities (not just Tier 1-2), sorted by score.
      */
-    _formatAll(memoryStore, currentTurn = 0, rankedBeats = null, reflections = null, rankedGoals = null, goalBeats = null) {
+    _formatAll(memoryStore, currentTurn = 0, rankedBeats = null, reflections = null, rankedGoals = null, goalBeats = null, narrativeDirection = null) {
         const budget = this.getSettings().tokenBudget;
         const l = this.labels;
 
@@ -138,7 +190,7 @@ export class PromptInjector {
         allEntities.sort((a, b) => b.score - a.score);
 
         if (budget > 0) {
-            return this._formatWithBudget(allEntities, null, rankedBeats, reflections, null, rankedGoals, goalBeats);
+            return this._formatWithBudget(allEntities, null, rankedBeats, reflections, null, rankedGoals, goalBeats, narrativeDirection);
         }
 
         // No budget — include everything
@@ -191,6 +243,12 @@ export class PromptInjector {
             }
         }
 
+        // Narrative direction (budget-exempt, appended after all factual sections)
+        const narrativeText = this._formatNarrativeDirection(narrativeDirection);
+        if (narrativeText) {
+            sections.push(narrativeText);
+        }
+
         if (sections.length === 0) return '';
 
         return `${l.worldStateOpen}\n${sections.join('\n\n')}\n${l.worldStateClose}`;
@@ -232,7 +290,7 @@ export class PromptInjector {
      * Pass 1: Guarantee minimum entities per category.
      * Pass 2: Fill remaining budget with highest-scored entities.
      */
-    _formatWithBudget(relevantEntities, sceneType = null, rankedBeats = null, reflections = null, memoryStore = null, rankedGoals = null, goalBeats = null) {
+    _formatWithBudget(relevantEntities, sceneType = null, rankedBeats = null, reflections = null, memoryStore = null, rankedGoals = null, goalBeats = null, narrativeDirection = null) {
         const settings = this.getSettings();
         const budget = settings.tokenBudget;
         const beatBudgetPercent = settings.beatBudgetPercent || 25;
@@ -372,6 +430,12 @@ export class PromptInjector {
                     sections.push(beatsText);
                 }
             }
+        }
+
+        // Narrative direction (budget-exempt, appended after all factual sections)
+        const narrativeText = this._formatNarrativeDirection(narrativeDirection);
+        if (narrativeText) {
+            sections.push(narrativeText);
         }
 
         if (sections.length === 0) return '';
@@ -518,6 +582,7 @@ export class PromptInjector {
             const desc = this._str(c.fields.description) || l.noDescription;
             lines.push(`- ${c.name}${tierMarker}: ${ok('description') ? desc : l.noDescription}`);
             if (ok('personality') && this._str(c.fields.personality)) lines.push(`  ${l.personality}: ${this._str(c.fields.personality)}`);
+            if (ok('mood') && this._str(c.fields.mood)) lines.push(`  ${l.mood}: ${this._str(c.fields.mood)}`);
             if (ok('status') && this._str(c.fields.status)) lines.push(`  ${l.status}: ${this._str(c.fields.status)}`);
             const rels = this._str(c.fields.relationships);
             if (ok('relationships') && rels) lines.push(`  ${l.relationships}: ${rels}`);
@@ -591,6 +656,59 @@ export class PromptInjector {
             const desc = this._str(e.fields.description) || l.noDescription;
             lines.push(`- ${l.turn} ${turn}: ${e.name} — ${ok('description') ? desc : l.noDescription}`);
             if (ok('consequences') && this._str(e.fields.consequences)) lines.push(`  ${l.consequences}: ${this._str(e.fields.consequences)}`);
+        }
+
+        return lines.join('\n');
+    }
+
+    /**
+     * Format narrative direction section for injection.
+     * Budget-exempt (~80-120 tokens). Returns empty string if no data.
+     */
+    _formatNarrativeDirection(narrativeDirection) {
+        if (!narrativeDirection) return '';
+
+        const l = this.labels;
+        const lang = this.getLang();
+        const focusLabels = FOCUS_LABELS[lang] || FOCUS_LABELS.en;
+        const pacingLabels = PACING_LABELS[lang] || PACING_LABELS.en;
+
+        const lines = [`## ${l.narrativeDirection}`, l.narrativeNote];
+
+        // Pacing + directive
+        const pacingLabel = pacingLabels[narrativeDirection.pacing] || narrativeDirection.pacing;
+        lines.push(`${l.pacing}: ${pacingLabel}`);
+        if (narrativeDirection.pacingDirective) {
+            lines.push(`> ${narrativeDirection.pacingDirective}`);
+        }
+
+        // Tension level
+        if (typeof narrativeDirection.tension === 'number') {
+            const tensionPct = Math.round(narrativeDirection.tension * 100);
+            lines.push(`${l.tension}: ${tensionPct}%`);
+        }
+
+        // Focus elements
+        if (narrativeDirection.focus && narrativeDirection.focus.length > 0) {
+            const focusNames = narrativeDirection.focus
+                .map(f => focusLabels[f] || f)
+                .join(', ');
+            lines.push(`${l.focus}: ${focusNames}`);
+        }
+
+        // Tone
+        if (narrativeDirection.tone) {
+            lines.push(`${l.tone}: ${narrativeDirection.tone}`);
+        }
+
+        // Tone avoid
+        if (narrativeDirection.toneAvoid) {
+            lines.push(`${l.toneAvoid}: ${narrativeDirection.toneAvoid}`);
+        }
+
+        // Next beat hint (optional)
+        if (narrativeDirection.nextBeatHint) {
+            lines.push(`${l.nextBeat}: ${narrativeDirection.nextBeatHint}`);
         }
 
         return lines.join('\n');

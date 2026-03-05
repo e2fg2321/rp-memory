@@ -903,6 +903,7 @@ const FIELD_DEFS = {
     characters: [
         { key: 'description', label: 'Description', type: 'textarea' },
         { key: 'personality', label: 'Personality', type: 'textarea' },
+        { key: 'mood', label: 'Mood', type: 'text' },
         { key: 'status', label: 'Status', type: 'text' },
         { key: 'relationships', label: 'Relationships', type: 'textarea' },
         { key: '_aliases', label: 'Aliases', type: 'text', meta: true },

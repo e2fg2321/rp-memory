@@ -2,6 +2,12 @@ import { unwrapField } from './Utils.js';
 
 const TERMINAL_STATUSES = new Set(['completed', 'failed', 'abandoned']);
 
+const VALID_PACING = ['accelerate', 'maintain', 'slow_down', 'pivot'];
+const VALID_FOCUS = [
+    'character_development', 'plot_advancement', 'world_building',
+    'relationship_dynamics', 'action_conflict', 'mystery_revelation',
+];
+
 export class GoalsManager {
     /**
      * @param {object} memoryStore
@@ -16,7 +22,7 @@ export class GoalsManager {
         this.apiClient = apiClient;
         this.getSettings = getSettings;
         this.getLang = getLang || (() => 'en');
-        this._lastAnalysis = null; // { turn, rankings: Map<goalId, {status, relevance, adjacentBeatIds}> }
+        this._lastAnalysis = null; // { turn, rankings: Map, narrativeDirection: object|null }
     }
 
     /**
@@ -250,7 +256,28 @@ export class GoalsManager {
                     });
                 }
 
-                this._lastAnalysis = { turn: currentTurn, rankings };
+                // Extract narrative direction (pacing, tension, focus, tone)
+                let narrativeDirection = null;
+                if (parsed.narrative_direction) {
+                    const nd = parsed.narrative_direction;
+                    narrativeDirection = {
+                        pacing: VALID_PACING.includes(nd.pacing) ? nd.pacing : 'maintain',
+                        pacingDirective: typeof nd.pacing_directive === 'string'
+                            ? nd.pacing_directive.slice(0, 200) : '',
+                        tension: typeof nd.tension === 'number'
+                            ? Math.max(0, Math.min(1, nd.tension)) : 0.5,
+                        focus: Array.isArray(nd.focus)
+                            ? nd.focus.filter(f => VALID_FOCUS.includes(f)).slice(0, 3) : [],
+                        tone: typeof nd.tone === 'string'
+                            ? nd.tone.slice(0, 60) : '',
+                        toneAvoid: typeof nd.tone_avoid === 'string'
+                            ? nd.tone_avoid.slice(0, 200) : '',
+                        nextBeatHint: typeof nd.next_beat_hint === 'string'
+                            ? nd.next_beat_hint.slice(0, 200) : null,
+                    };
+                }
+
+                this._lastAnalysis = { turn: currentTurn, rankings, narrativeDirection };
 
                 // Auto-update entity status for terminal classifications
                 for (const [goalId, ranking] of rankings) {
@@ -350,6 +377,20 @@ export class GoalsManager {
         return ranked;
     }
 
+    // ===================== Narrative Direction =====================
+
+    /**
+     * Get narrative direction from the last analysis, if fresh.
+     *
+     * @param {number} currentTurn
+     * @returns {object|null} { pacing, pacingDirective, tension, focus, tone, toneAvoid, nextBeatHint } or null
+     */
+    getNarrativeDirection(currentTurn) {
+        if (!this._lastAnalysis) return null;
+        if (this._lastAnalysis.turn !== currentTurn) return null;
+        return this._lastAnalysis.narrativeDirection || null;
+    }
+
     // ===================== Goal-Adjacent Beats =====================
 
     /**
@@ -411,16 +452,20 @@ export class GoalsManager {
 
 // ===================== Intent Analysis Prompts =====================
 
-const INTENT_SYSTEM_PROMPT = `You are a narrative analyst for a roleplay story. Your job is to classify goals by their current narrative relevance.
+const INTENT_SYSTEM_PROMPT = `You are a narrative analyst for a roleplay story. Your job is to:
+1. Classify each tracked goal by its current narrative relevance.
+2. Assess the overall narrative pacing, tension, tone, and focus.
 
 Output valid JSON only, no explanation.`;
 
-const INTENT_SYSTEM_PROMPT_ZH = `你是一个角色扮演故事的叙事分析师。你的任务是根据当前叙事相关性对目标进行分类。
+const INTENT_SYSTEM_PROMPT_ZH = `你是一个角色扮演故事的叙事分析师。你的任务是：
+1. 根据当前叙事相关性对每个目标进行分类。
+2. 评估整体叙事节奏、张力、基调和焦点。
 
 只输出有效的JSON，不要解释。`;
 
 function getIntentUserPrompt(messages, goals, beats) {
-    return `Given the recent narrative and the current tracked goals, analyze each goal's relevance.
+    return `Given the recent narrative and the current tracked goals, analyze each goal's relevance and assess the overall narrative direction.
 
 RECENT MESSAGES:
 ${messages}
@@ -431,7 +476,7 @@ ${JSON.stringify(goals, null, 2)}
 RECENT BEATS:
 ${JSON.stringify(beats, null, 2)}
 
-For each goal, output:
+Output this JSON structure:
 {
   "goals": [
     {
@@ -440,21 +485,39 @@ For each goal, output:
       "relevance": 0.0-1.0,
       "adjacent_beat_ids": ["beat-id-1"]
     }
-  ]
+  ],
+  "narrative_direction": {
+    "pacing": "accelerate|maintain|slow_down|pivot",
+    "pacing_directive": "1-2 sentence directive for the narrator",
+    "tension": 0.0-1.0,
+    "focus": ["element1", "element2"],
+    "tone": "1-3 word emotional register",
+    "tone_avoid": "what tone/approach to steer away from",
+    "next_beat_hint": "optional 1-sentence narrative suggestion or null"
+  }
 }
 
-Rules:
+Goal rules:
 - "active": user is currently pursuing this goal
 - "background": relevant but not immediately pursued
 - "stale": hasn't been relevant for a while
 - "completed": narrative signals suggest goal was achieved
 - "abandoned": narrative signals suggest goal was given up
 - relevance: 0.0 = completely irrelevant, 1.0 = central focus
-- adjacent_beat_ids: 0-2 beat IDs most related to this goal (from the RECENT BEATS list)`;
+- adjacent_beat_ids: 0-2 beat IDs most related to this goal (from the RECENT BEATS list)
+
+Narrative direction rules:
+- pacing: "accelerate" = push toward climax/resolution; "maintain" = current pace is good; "slow_down" = add breathing room, character moments; "pivot" = shift tone or introduce new thread
+- pacing_directive: brief instruction for the narrator's next response style
+- tension: 0.0 = relaxed/calm, 1.0 = peak dramatic tension
+- focus: 1-3 from [character_development, plot_advancement, world_building, relationship_dynamics, action_conflict, mystery_revelation]
+- tone: 1-3 word emotional register (e.g. "somber, introspective", "tense, foreboding", "warm, playful")
+- tone_avoid: brief note on what tone or approach to avoid right now, or empty string if none
+- next_beat_hint: optional single-sentence narrative nudge based on active goals and trajectory, or null`;
 }
 
 function getIntentUserPromptZh(messages, goals, beats) {
-    return `根据最近的叙事和当前跟踪的目标，分析每个目标的相关性。
+    return `根据最近的叙事和当前跟踪的目标，分析每个目标的相关性并评估整体叙事方向。
 
 最近的消息：
 ${messages}
@@ -465,7 +528,7 @@ ${JSON.stringify(goals, null, 2)}
 最近的节拍：
 ${JSON.stringify(beats, null, 2)}
 
-对每个目标输出：
+输出以下JSON结构：
 {
   "goals": [
     {
@@ -474,15 +537,33 @@ ${JSON.stringify(beats, null, 2)}
       "relevance": 0.0-1.0,
       "adjacent_beat_ids": ["节拍ID"]
     }
-  ]
+  ],
+  "narrative_direction": {
+    "pacing": "accelerate|maintain|slow_down|pivot",
+    "pacing_directive": "给叙述者的1-2句指导",
+    "tension": 0.0-1.0,
+    "focus": ["元素1", "元素2"],
+    "tone": "1-3个词的情感基调",
+    "tone_avoid": "当前应避免的基调或方式",
+    "next_beat_hint": "可选的1句叙事建议或null"
+  }
 }
 
-规则：
+目标规则：
 - "active"：用户正在积极追求此目标
 - "background"：相关但未立即追求
 - "stale"：已经有一段时间没有相关性
 - "completed"：叙事信号表明目标已达成
 - "abandoned"：叙事信号表明目标已放弃
 - relevance：0.0 = 完全不相关，1.0 = 核心焦点
-- adjacent_beat_ids：与此目标最相关的0-2个节拍ID（来自最近的节拍列表）`;
+- adjacent_beat_ids：与此目标最相关的0-2个节拍ID（来自最近的节拍列表）
+
+叙事方向规则：
+- pacing："accelerate" = 推向高潮/解决；"maintain" = 当前节奏良好；"slow_down" = 增加喘息空间、角色互动；"pivot" = 转换基调或引入新线索
+- pacing_directive：给叙述者下一个回复风格的简短指导
+- tension：0.0 = 放松/平静，1.0 = 最高戏剧张力
+- focus：从以下选择1-3个元素 [character_development, plot_advancement, world_building, relationship_dynamics, action_conflict, mystery_revelation]
+- tone：1-3个词的情感基调（例如："沉郁、内省"、"紧张、不祥"、"温暖、俏皮"）
+- tone_avoid：当前应避免的基调或叙事方式的简短说明，无则留空
+- next_beat_hint：基于活跃目标和轨迹的可选单句叙事建议，或null`;
 }

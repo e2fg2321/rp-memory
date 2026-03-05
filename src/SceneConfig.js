@@ -32,11 +32,11 @@ export const SCENE_ANCHORS_ZH = {
  */
 export const FIELD_RELEVANCE = {
     characters: {
-        combat:   ['status', 'description'],
-        social:   ['personality', 'relationships', 'status'],
-        explore:  ['description', 'status'],
-        plot:     ['relationships', 'status', 'personality'],
-        downtime: ['description', 'personality', 'relationships'],
+        combat:   ['status', 'mood', 'description'],
+        social:   ['personality', 'mood', 'relationships', 'status'],
+        explore:  ['description', 'mood', 'status'],
+        plot:     ['relationships', 'mood', 'status', 'personality'],
+        downtime: ['description', 'personality', 'mood', 'relationships'],
     },
     locations: {
         combat:   ['notableFeatures', 'description'],
