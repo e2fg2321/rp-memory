@@ -2478,6 +2478,10 @@ jQuery(async function () {
         if (getSettings().embeddingsEnabled) {
             loadEmbeddingModelList().catch(err => console.warn('[RP Memory] Initial embedding model load failed:', err));
         }
+        if (getSettings().goalsIntentEnabled) {
+            // Populate after model list loads (populateGoalsIntentModelDropdown chains off cachedModelList)
+            loadModelList().then(() => populateGoalsIntentModelDropdown()).catch(() => {});
+        }
 
         // Load initial state
         onChatChanged();
