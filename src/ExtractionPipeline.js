@@ -29,12 +29,13 @@ const INJECTION_PATTERNS = [
 ];
 
 export class ExtractionPipeline {
-    constructor(apiClient, memoryStore, getSettings, decayEngine = null, getLang = null) {
+    constructor(apiClient, memoryStore, getSettings, decayEngine = null, getLang = null, embeddingService = null) {
         this.apiClient = apiClient;
         this.memoryStore = memoryStore;
         this.getSettings = getSettings;
         this.decayEngine = decayEngine;
         this.getLang = getLang || (() => 'en');
+        this.embeddingService = embeddingService;
         this._abortController = null;
         this._batchMode = false;
         this.goalsManager = null; // Set externally after construction
@@ -693,6 +694,11 @@ export class ExtractionPipeline {
         return Math.abs(hash).toString(36).slice(0, 6);
     }
 
+    _invalidateEntityEmbedding(category, entityId) {
+        if (!this.embeddingService || !entityId) return;
+        this.embeddingService.invalidateEntity(category, entityId);
+    }
+
     /**
      * Merge extraction result into memory store.
      */
@@ -805,6 +811,7 @@ export class ExtractionPipeline {
                     fields: mergedFields,
                     conflicts: mergedConflicts,
                 });
+                this._invalidateEntityEmbedding(category, existing.id);
 
                 // Reinforce: reset decay, restore score, promote Tier 3 → 2 if applicable
                 // Goals use GoalsManager for reinforcement; other categories use DecayEngine
@@ -836,6 +843,7 @@ export class ExtractionPipeline {
                     conflicts: [],
                     source: 'extracted',
                 });
+                this._invalidateEntityEmbedding(category, entityId);
             }
         }
     }
@@ -857,6 +865,7 @@ export class ExtractionPipeline {
                 lastMentionedTurn: currentTurn,
                 conflicts: mergedConflicts,
             });
+            this._invalidateEntityEmbedding('mainCharacter', existing.id);
         } else {
             this.memoryStore.addEntity('mainCharacter', {
                 id: 'main-character',
@@ -871,6 +880,7 @@ export class ExtractionPipeline {
                 conflicts: [],
                 source: 'extracted',
             });
+            this._invalidateEntityEmbedding('mainCharacter', 'main-character');
         }
     }
 

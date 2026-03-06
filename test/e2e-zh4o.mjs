@@ -508,14 +508,13 @@ async function main() {
         ? phase6RankedReflections.map(rr => rr.reflection)
         : memoryStore.getRecentReflections(10);
 
-    const injectionText = injector.format(
-        memoryStore,
-        phase6Ranked || null,
-        phase6SceneType || null,
-        currentTurnFinal,
-        phase6RankedBeats || null,
-        injectReflections,
-    );
+    const injectionText = injector.format(memoryStore, {
+        relevantEntities: phase6Ranked || null,
+        sceneType: phase6SceneType || null,
+        currentTurn: currentTurnFinal,
+        rankedBeats: phase6RankedBeats || null,
+        reflections: injectReflections,
+    });
 
     const { estimateTokens } = await import('../src/Utils.js');
     const injectionTokens = estimateTokens(injectionText);

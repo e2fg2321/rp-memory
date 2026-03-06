@@ -46,7 +46,7 @@ export class GoalsManager {
         this.apiClient = apiClient;
         this.getSettings = getSettings;
         this.getLang = getLang || (() => 'en');
-        this._lastAnalysis = null; // { turn, rankings: Map, narrativeDirection: object|null }
+        this._lastAnalysis = null; // { turn, rankings: Map, narrativeDirection: object|null, directionSuggestions: Array }
     }
 
     /**
@@ -226,18 +226,25 @@ export class GoalsManager {
      * Analyze goals via LLM to classify narrative relevance.
      * Only runs if goalsIntentEnabled is true.
      *
-     * @param {string[]} recentMessages - Recent message texts
+     * @param {Array<string|object>} recentMessages - Recent message texts or structured turn objects
      * @param {number} currentTurn
+     * @param {object|null} authorDirection - current user-set direction, if any
      */
-    async analyze(recentMessages, currentTurn) {
+    async analyze(recentMessages, currentTurn, authorDirection = null) {
         const settings = this.getSettings();
         if (!settings.goalsIntentEnabled) return;
 
         const goals = this.memoryStore.getAllEntities('goals');
-        const goalList = Object.values(goals).filter(g => g.tier !== 3);
+        const goalList = Object.values(goals)
+            .filter(g => !TERMINAL_STATUSES.has(unwrapField(g.fields?.status)));
         if (goalList.length === 0) return;
 
         const recentBeats = this.memoryStore.getRecentBeats(10);
+        const messagesJson = this._normalizeRecentMessages(recentMessages).slice(-10);
+
+        const directionJson = authorDirection?.text?.trim()
+            ? { mode: authorDirection.mode, text: authorDirection.text.trim() }
+            : null;
 
         const goalsJson = goalList.map(g => ({
             id: g.id,
@@ -245,6 +252,10 @@ export class GoalsManager {
             status: unwrapField(g.fields?.status) || 'in_progress',
             description: unwrapField(g.fields?.description) || '',
             importance: g.importance || 5,
+            archived: g.tier === 3,
+            timeframe: unwrapField(g.fields?.timeframe) || '',
+            progress: unwrapField(g.fields?.progress) || '',
+            blockers: unwrapField(g.fields?.blockers) || '',
         }));
 
         const beatsJson = recentBeats.map(b => ({
@@ -253,16 +264,14 @@ export class GoalsManager {
             text: b.text,
         }));
 
-        const messagesText = recentMessages.slice(-10).join('\n\n---\n\n');
-
         const lang = this.getLang();
         const systemPrompt = lang === 'zh'
             ? INTENT_SYSTEM_PROMPT_ZH
             : INTENT_SYSTEM_PROMPT;
 
         const userPrompt = lang === 'zh'
-            ? getIntentUserPromptZh(messagesText, goalsJson, beatsJson)
-            : getIntentUserPrompt(messagesText, goalsJson, beatsJson);
+            ? getIntentUserPromptZh(messagesJson, goalsJson, beatsJson, directionJson)
+            : getIntentUserPrompt(messagesJson, goalsJson, beatsJson, directionJson);
 
         const promptMessages = [
             { role: 'system', content: systemPrompt },
@@ -305,29 +314,16 @@ export class GoalsManager {
                     };
                 }
 
-                this._lastAnalysis = { turn: currentTurn, rankings, narrativeDirection };
+                const directionSuggestions = Array.isArray(parsed.direction_suggestions)
+                    ? parsed.direction_suggestions
+                        .map((item, index) => this._normalizeDirectionSuggestion(item, index))
+                        .filter(Boolean)
+                        .slice(0, 4)
+                    : [];
 
-                // Auto-update entity status for terminal classifications
-                for (const [goalId, ranking] of rankings) {
-                    if (ranking.status === 'completed' || ranking.status === 'abandoned') {
-                        const entity = this.memoryStore.getEntity('goals', goalId);
-                        if (entity) {
-                            const currentStatus = unwrapField(entity.fields?.status);
-                            if (!TERMINAL_STATUSES.has(currentStatus)) {
-                                if (entity.fields?.status && typeof entity.fields.status === 'object' && 'value' in entity.fields.status) {
-                                    entity.fields.status.value = ranking.status;
-                                    entity.fields.status.lastUpdated = currentTurn;
-                                } else {
-                                    if (!entity.fields) entity.fields = {};
-                                    entity.fields.status = ranking.status;
-                                }
-                                if (settings.debugMode) {
-                                    console.debug(`[RP Memory] GoalsManager: Auto-updated "${entity.name}" status to "${ranking.status}" based on intent analysis`);
-                                }
-                            }
-                        }
-                    }
-                }
+                const nudgeDirectionChange = Boolean(parsed.nudge_direction_change);
+
+                this._lastAnalysis = { turn: currentTurn, rankings, narrativeDirection, directionSuggestions, nudgeDirectionChange };
 
                 if (settings.debugMode) {
                     console.debug('[RP Memory] Goal intent analysis:', Object.fromEntries(rankings));
@@ -367,11 +363,12 @@ export class GoalsManager {
      * Get goals ranked for injection into the prompt.
      *
      * @param {number} currentTurn
-     * @returns {Array<{entity, score}>} Ranked goals (excluding tier-3)
+     * @returns {Array<{entity, score}>} Ranked goals
      */
     getRankedGoals(currentTurn) {
         const goals = this.memoryStore.getAllEntities('goals');
-        const goalList = Object.values(goals).filter(g => g.tier !== 3);
+        const goalList = Object.values(goals)
+            .filter(g => !TERMINAL_STATUSES.has(unwrapField(g.fields?.status)));
 
         if (goalList.length === 0) return [];
 
@@ -381,12 +378,13 @@ export class GoalsManager {
             for (const goal of goalList) {
                 const analysis = this._lastAnalysis.rankings.get(goal.id);
                 if (analysis) {
-                    // Filter out stale goals
-                    if (analysis.status === 'stale') continue;
+                    // Keep analysis advisory: do not inject inferred stale/terminal goals,
+                    // but also do not rewrite canonical memory from this signal.
+                    if (analysis.status === 'stale' || analysis.status === 'completed' || analysis.status === 'abandoned') continue;
                     ranked.push({ entity: goal, score: analysis.relevance, category: 'goals' });
                 } else {
                     // Goals not in analysis get a default low score
-                    ranked.push({ entity: goal, score: 0.3, category: 'goals' });
+                    ranked.push({ entity: goal, score: goal.tier === 3 ? 0.2 : 0.3, category: 'goals' });
                 }
             }
             ranked.sort((a, b) => b.score - a.score);
@@ -419,6 +417,32 @@ export class GoalsManager {
         return this._lastAnalysis.narrativeDirection || null;
     }
 
+    /**
+     * Get explicit direction suggestions from the freshest analysis.
+     *
+     * @param {number} currentTurn
+     * @returns {Array<{id: string, label: string, text: string}>}
+     */
+    getDirectionSuggestions(currentTurn) {
+        if (!this._lastAnalysis) return [];
+        if (this._lastAnalysis.turn !== currentTurn) return [];
+        return Array.isArray(this._lastAnalysis.directionSuggestions)
+            ? this._lastAnalysis.directionSuggestions
+            : [];
+    }
+
+    /**
+     * Whether the LLM analysis recommends the user change their current direction.
+     *
+     * @param {number} currentTurn
+     * @returns {boolean}
+     */
+    shouldNudgeDirection(currentTurn) {
+        if (!this._lastAnalysis) return false;
+        if (this._lastAnalysis.turn !== currentTurn) return false;
+        return Boolean(this._lastAnalysis.nudgeDirectionChange);
+    }
+
     // ===================== Goal-Adjacent Beats =====================
 
     /**
@@ -432,7 +456,7 @@ export class GoalsManager {
         if (!goalIds || goalIds.length === 0) return result;
 
         // If intent analysis provided adjacent beat IDs, use those
-        if (this._lastAnalysis) {
+        if (this._lastAnalysis && this._lastAnalysis.turn === this.memoryStore.getTurnCounter()) {
             const allBeats = this.memoryStore.getBeats();
             const beatIndex = new Map();
             for (const beat of allBeats) {
@@ -476,6 +500,67 @@ export class GoalsManager {
             .slice(0, 2);
         return matching;
     }
+
+    _normalizeRecentMessages(recentMessages) {
+        if (!Array.isArray(recentMessages)) return [];
+
+        return recentMessages
+            .map((message) => {
+                if (typeof message === 'string') {
+                    const text = message.trim();
+                    return text ? {
+                        speaker: 'Unknown',
+                        role: 'assistant',
+                        priority: 'normal',
+                        text,
+                    } : null;
+                }
+
+                if (!message || typeof message !== 'object') return null;
+
+                const text = typeof message.text === 'string'
+                    ? message.text.trim()
+                    : typeof message.mes === 'string'
+                        ? message.mes.trim()
+                        : '';
+                if (!text) return null;
+
+                const isUser = Boolean(message.isUser ?? message.is_user);
+                return {
+                    speaker: message.speaker || message.name || (isUser ? 'User' : 'Assistant'),
+                    role: isUser ? 'user' : (message.role || 'assistant'),
+                    priority: message.priority || (message.isHighPriority ? 'high' : 'normal'),
+                    text,
+                };
+            })
+            .filter(Boolean);
+    }
+
+    _normalizeDirectionSuggestion(item, index) {
+        if (!item || typeof item !== 'object') return null;
+
+        const text = typeof item.text === 'string'
+            ? item.text.trim().slice(0, 240)
+            : '';
+        if (!text) return null;
+
+        const label = typeof item.label === 'string'
+            ? item.label.trim().slice(0, 40)
+            : '';
+        const rawId = typeof item.id === 'string' && item.id.trim()
+            ? item.id.trim()
+            : (label || `option-${index + 1}`);
+        const id = rawId
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, '-')
+            .replace(/^-+|-+$/g, '') || `option-${index + 1}`;
+
+        return {
+            id,
+            label: label || `Option ${index + 1}`,
+            text,
+        };
+    }
 }
 
 // ===================== Intent Analysis Prompts =====================
@@ -483,27 +568,35 @@ export class GoalsManager {
 const INTENT_SYSTEM_PROMPT = `You are a narrative analyst for a roleplay story. Your job is to:
 1. Classify each tracked goal by its current narrative relevance.
 2. Assess the overall narrative pacing, tension, tone, and focus.
+3. Propose four distinct direction suggestions the user could choose for the next reply.
+4. If the user has set a scene direction, evaluate whether it still fits the story and flag if a change is warranted.
 
 Output valid JSON only, no explanation.`;
 
 const INTENT_SYSTEM_PROMPT_ZH = `你是一个角色扮演故事的叙事分析师。你的任务是：
 1. 根据当前叙事相关性对每个目标进行分类。
 2. 评估整体叙事节奏、张力、基调和焦点。
+3. 提出4个不同的下一条回复方向建议，供用户选择。
+4. 如果用户已设置场景方向，评估它是否仍然贴合故事，并在需要更换时标记。
 
 只输出有效的JSON，不要解释。`;
 
-function getIntentUserPrompt(messages, goals, beats) {
+function getIntentUserPrompt(messages, goals, beats, currentDirection) {
+    const directionBlock = currentDirection
+        ? `\nCURRENT AUTHOR DIRECTION (user-set steering for the scene):\n${JSON.stringify(currentDirection, null, 2)}\n`
+        : `\nCURRENT AUTHOR DIRECTION: none\n`;
+
     return `Given the recent narrative and the current tracked goals, analyze each goal's relevance and assess the overall narrative direction.
 
 RECENT MESSAGES:
-${messages}
+${JSON.stringify(messages, null, 2)}
 
 CURRENT GOALS:
 ${JSON.stringify(goals, null, 2)}
 
 RECENT BEATS:
 ${JSON.stringify(beats, null, 2)}
-
+${directionBlock}
 Output this JSON structure:
 {
   "goals": [
@@ -522,15 +615,26 @@ Output this JSON structure:
     "tone": "1-3 word emotional register",
     "tone_avoid": "what tone/approach to steer away from",
     "next_beat_hint": "optional 1-sentence narrative suggestion or null"
-  }
+  },
+  "direction_suggestions": [
+    {
+      "id": "short-kebab-case-id",
+      "label": "2-4 word label",
+      "text": "A single-sentence direction the user could choose for the next reply."
+    }
+  ],
+  "nudge_direction_change": false
 }
 
 Goal rules:
+- Treat entries with "priority": "high" as strong evidence of the user's intent and choices
 - "active": user is currently pursuing this goal
 - "background": relevant but not immediately pursued
 - "stale": hasn't been relevant for a while
 - "completed": narrative signals suggest goal was achieved
 - "abandoned": narrative signals suggest goal was given up
+- archived goals are dormant threads that can become relevant again
+- do not mark a goal "completed" or "abandoned" unless the evidence in the recent turns is explicit
 - relevance: 0.0 = completely irrelevant, 1.0 = central focus
 - adjacent_beat_ids: 0-2 beat IDs most related to this goal (from the RECENT BEATS list)
 
@@ -541,21 +645,38 @@ Narrative direction rules:
 - focus: 1-3 from [character_development, plot_advancement, world_building, relationship_dynamics, action_conflict, mystery_revelation]
 - tone: 1-3 word emotional register (e.g. "somber, introspective", "tense, foreboding", "warm, playful")
 - tone_avoid: brief note on what tone or approach to avoid right now, or empty string if none
-- next_beat_hint: optional single-sentence narrative nudge based on active goals and trajectory, or null`;
+- next_beat_hint: optional single-sentence narrative nudge based on active goals and trajectory, or null
+
+Direction suggestion rules:
+- Generate exactly 4 distinct suggestions for how the next reply could be directed
+- These are for the user to choose from, so make them meaningfully different from each other
+- Keep labels short (2-4 words) and concrete
+- Keep each text to one sentence, forward-looking, and specific to the current scene or trajectory
+- Suggestions should be guidance, not canon facts or memory updates
+
+Direction change nudge:
+- If CURRENT AUTHOR DIRECTION is "none", set nudge_direction_change to false
+- If a direction is set, evaluate whether it still aligns with the story's current trajectory, tone, and the recent messages
+- Set nudge_direction_change to true ONLY if the direction has become misaligned, redundant, or counterproductive — i.e. the story has moved past it
+- Do NOT nudge just because the direction was partially fulfilled; nudge only when continuing to follow it would steer the story in the wrong direction or hold it back`;
 }
 
-function getIntentUserPromptZh(messages, goals, beats) {
+function getIntentUserPromptZh(messages, goals, beats, currentDirection) {
+    const directionBlock = currentDirection
+        ? `\n当前作者方向（用户为场景设置的引导）：\n${JSON.stringify(currentDirection, null, 2)}\n`
+        : `\n当前作者方向：无\n`;
+
     return `根据最近的叙事和当前跟踪的目标，分析每个目标的相关性并评估整体叙事方向。
 
 最近的消息：
-${messages}
+${JSON.stringify(messages, null, 2)}
 
 当前目标：
 ${JSON.stringify(goals, null, 2)}
 
 最近的节拍：
 ${JSON.stringify(beats, null, 2)}
-
+${directionBlock}
 输出以下JSON结构：
 {
   "goals": [
@@ -574,15 +695,26 @@ ${JSON.stringify(beats, null, 2)}
     "tone": "1-3个词的情感基调",
     "tone_avoid": "当前应避免的基调或方式",
     "next_beat_hint": "可选的1句叙事建议或null"
-  }
+  },
+  "direction_suggestions": [
+    {
+      "id": "简短-kebab-case-id",
+      "label": "2-4词标签",
+      "text": "用户可选择的下一条回复方向，一句话。"
+    }
+  ],
+  "nudge_direction_change": false
 }
 
 目标规则：
+- 将 "priority": "high" 的条目视为用户意图和选择的强信号
 - "active"：用户正在积极追求此目标
 - "background"：相关但未立即追求
 - "stale"：已经有一段时间没有相关性
 - "completed"：叙事信号表明目标已达成
 - "abandoned"：叙事信号表明目标已放弃
+- archived 目标表示休眠线程，仍然可能重新变得相关
+- 除非最近回合里有明确证据，否则不要把目标标记为 "completed" 或 "abandoned"
 - relevance：0.0 = 完全不相关，1.0 = 核心焦点
 - adjacent_beat_ids：与此目标最相关的0-2个节拍ID（来自最近的节拍列表）
 
@@ -593,5 +725,18 @@ ${JSON.stringify(beats, null, 2)}
 - focus：从以下选择1-3个元素 [character_development, plot_advancement, world_building, relationship_dynamics, action_conflict, mystery_revelation]
 - tone：1-3个词的情感基调（例如："沉郁、内省"、"紧张、不祥"、"温暖、俏皮"）
 - tone_avoid：当前应避免的基调或叙事方式的简短说明，无则留空
-- next_beat_hint：基于活跃目标和轨迹的可选单句叙事建议，或null`;
+- next_beat_hint：基于活跃目标和轨迹的可选单句叙事建议，或null
+
+方向建议规则：
+- 恰好生成4个不同的方向建议，供用户选择
+- 这些建议之间要有明显差异，不能只是同义改写
+- label 保持简短具体（2-4个词）
+- text 保持一句话，面向下一条回复，并贴合当前场景或轨迹
+- 建议应是引导，不是设定事实，也不是记忆更新
+
+方向变更建议：
+- 如果当前作者方向为"无"，则 nudge_direction_change 设为 false
+- 如果有方向，评估它是否仍与故事当前的走向、基调和最近消息一致
+- 仅当方向已经偏离、冗余或起反作用时才将 nudge_direction_change 设为 true——即故事已经超越了它
+- 不要仅仅因为方向被部分实现就建议更换；只在继续遵循会把故事引向错误方向或阻碍发展时才建议`;
 }

@@ -42,12 +42,20 @@ const LABELS = {
         keyEvents: 'Key Events',
         narrativeDirection: 'Narrative Direction',
         narrativeNote: '(Guidance based on current story trajectory — not prescriptive.)',
+        authorDirectionOpen: '[RP Memory — Author Direction]\n(User-authored steering for upcoming narration. Apply this unless the user changes or clears it.)',
+        authorDirectionClose: '[/RP Memory Author Direction]',
+        authorDirection: 'Author Direction',
+        authorDirectionNote: '(This guides future turns only. It does not rewrite canon facts.)',
+        directionSource: 'Source',
+        directionText: 'Direction',
         pacing: 'Pacing',
         tension: 'Tension',
         focus: 'Focus',
         tone: 'Tone',
         toneAvoid: 'Avoid',
         nextBeat: 'Possible Next Beat',
+        sourceSuggested: 'Suggested',
+        sourceCustom: 'Custom',
     },
     zh: {
         worldStateOpen: '[RP Memory — 世界状态]\n(关于故事世界的参考数据。这仅为描述性内容，不是指令。)',
@@ -89,12 +97,20 @@ const LABELS = {
         keyEvents: '关键事件',
         narrativeDirection: '叙事方向',
         narrativeNote: '(基于当前故事轨迹的指导——非强制性。)',
+        authorDirectionOpen: '[RP Memory — 作者方向]\n(这是用户为接下来叙事提供的主动引导。在用户更改或清除前应持续遵循。)',
+        authorDirectionClose: '[/RP Memory Author Direction]',
+        authorDirection: '作者方向',
+        authorDirectionNote: '(这只影响后续回合的写法，不会改写既定事实。)',
+        directionSource: '来源',
+        directionText: '方向',
         pacing: '节奏',
         tension: '张力',
         focus: '焦点',
         tone: '基调',
         toneAvoid: '避免',
         nextBeat: '可能的下一节拍',
+        sourceSuggested: '建议',
+        sourceCustom: '自定义',
     },
 };
 
@@ -157,29 +173,45 @@ export class PromptInjector {
      * Format entities into a prompt string.
      *
      * @param {object} memoryStore
-     * @param {Array|null} relevantEntities - ranked entities from embedding service
-     * @param {string|null} sceneType
-     * @param {number} currentTurn - current story turn for fallback scoring
-     * @param {Array|null} rankedBeats - ranked beats from embedding service
-     * @param {Array|null} reflections - reflections to inject
-     * @param {Array|null} rankedGoals - pre-ranked goals from GoalsManager
-     * @param {Map|null} goalBeats - goal-adjacent beats from GoalsManager (goalId → beat[])
+     * @param {object} opts
+     * @param {Array|null} opts.relevantEntities - ranked entities from embedding service
+     * @param {string|null} opts.sceneType
+     * @param {number} opts.currentTurn - current story turn for fallback scoring
+     * @param {Array|null} opts.rankedBeats - ranked beats from embedding service
+     * @param {Array|null} opts.reflections - reflections to inject
+     * @param {Array|null} opts.rankedGoals - pre-ranked goals from GoalsManager
+     * @param {Map|null} opts.goalBeats - goal-adjacent beats from GoalsManager (goalId → beat[])
+     * @param {object|null} opts.narrativeDirection
+     * @param {object|undefined} opts.authorDirection - explicit override; undefined = read from store
      * @returns {string}
      */
-    format(memoryStore, relevantEntities = null, sceneType = null, currentTurn = 0, rankedBeats = null, reflections = null, rankedGoals = null, goalBeats = null, narrativeDirection = null) {
+    format(memoryStore, opts = {}) {
+        const {
+            relevantEntities = null,
+            sceneType = null,
+            currentTurn = 0,
+            rankedBeats = null,
+            reflections = null,
+            rankedGoals = null,
+            goalBeats = null,
+            narrativeDirection = null,
+            authorDirection,
+        } = opts;
+        const activeAuthorDirection = authorDirection === undefined
+            ? memoryStore?.getAuthorDirection?.()
+            : authorDirection;
         if (relevantEntities !== null) {
-            return this._formatWithBudget(relevantEntities, sceneType, rankedBeats, reflections, memoryStore, rankedGoals, goalBeats, narrativeDirection);
+            return this._formatWithBudget(relevantEntities, sceneType, rankedBeats, reflections, memoryStore, rankedGoals, goalBeats, narrativeDirection, activeAuthorDirection);
         }
-        return this._formatAll(memoryStore, currentTurn, rankedBeats, reflections, rankedGoals, goalBeats, narrativeDirection);
+        return this._formatAll(memoryStore, currentTurn, rankedBeats, reflections, rankedGoals, goalBeats, narrativeDirection, activeAuthorDirection);
     }
 
     /**
      * Fallback: format all entities with tri-score-like ordering.
      * Includes all entities (not just Tier 1-2), sorted by score.
      */
-    _formatAll(memoryStore, currentTurn = 0, rankedBeats = null, reflections = null, rankedGoals = null, goalBeats = null, narrativeDirection = null) {
+    _formatAll(memoryStore, currentTurn = 0, rankedBeats = null, reflections = null, rankedGoals = null, goalBeats = null, narrativeDirection = null, authorDirection = null) {
         const budget = this.getSettings().tokenBudget;
-        const l = this.labels;
 
         // Collect all entities across categories with scores
         const allEntities = [];
@@ -202,7 +234,7 @@ export class PromptInjector {
         allEntities.sort((a, b) => b.score - a.score);
 
         if (budget > 0) {
-            return this._formatWithBudget(allEntities, null, rankedBeats, reflections, null, rankedGoals, goalBeats, narrativeDirection);
+            return this._formatWithBudget(allEntities, null, rankedBeats, reflections, null, rankedGoals, goalBeats, narrativeDirection, authorDirection);
         }
 
         // No budget — include everything
@@ -228,9 +260,11 @@ export class PromptInjector {
             sections.push(this._formatLocations(locations));
         }
 
-        if (rankedGoals && rankedGoals.length > 0) {
-            const goalEntities = rankedGoals.map(g => g.entity);
-            sections.push(this._formatGoals(goalEntities, null, goalBeats));
+        if (Array.isArray(rankedGoals)) {
+            if (rankedGoals.length > 0) {
+                const goalEntities = rankedGoals.map(g => g.entity);
+                sections.push(this._formatGoals(goalEntities, null, goalBeats));
+            }
         } else {
             const goals = this._getSortedEntities(memoryStore, 'goals');
             if (goals.length > 0) {
@@ -261,9 +295,29 @@ export class PromptInjector {
             sections.push(narrativeText);
         }
 
-        if (sections.length === 0) return '';
+        return this._composePrompt(sections, authorDirection);
+    }
 
-        return `${l.worldStateOpen}\n${sections.join('\n\n')}\n${l.worldStateClose}`;
+    _mergeGoalRanking(relevantEntities, rankedGoals) {
+        if (!Array.isArray(rankedGoals)) return relevantEntities;
+
+        const merged = relevantEntities.filter(item => item.category !== 'goals');
+        for (const goal of rankedGoals) {
+            merged.push({
+                category: 'goals',
+                entity: goal.entity,
+                score: goal.score,
+            });
+        }
+        merged.sort((a, b) => b.score - a.score);
+        return merged;
+    }
+
+    _getGoalBeatMap(goalBeats, goalId) {
+        if (!goalBeats?.get) return null;
+        const beats = goalBeats.get(goalId);
+        if (!beats || beats.length === 0) return null;
+        return new Map([[goalId, beats]]);
     }
 
     /**
@@ -302,13 +356,14 @@ export class PromptInjector {
      * Pass 1: Guarantee minimum entities per category.
      * Pass 2: Fill remaining budget with highest-scored entities.
      */
-    _formatWithBudget(relevantEntities, sceneType = null, rankedBeats = null, reflections = null, memoryStore = null, rankedGoals = null, goalBeats = null, narrativeDirection = null) {
+    _formatWithBudget(relevantEntities, sceneType = null, rankedBeats = null, reflections = null, memoryStore = null, rankedGoals = null, goalBeats = null, narrativeDirection = null, authorDirection = null) {
         const settings = this.getSettings();
         const budget = settings.tokenBudget;
         const beatBudgetPercent = settings.beatBudgetPercent || 25;
         const reflectionBudgetPercent = settings.reflectionBudgetPercent || 15;
 
         const l = this.labels;
+        const rankedEntities = this._mergeGoalRanking(relevantEntities, rankedGoals);
         let totalBudget = budget > 0 ? budget : Infinity;
         let currentTokens = estimateTokens(`${l.worldStateOpen}\n${l.worldStateClose}`);
 
@@ -340,7 +395,7 @@ export class PromptInjector {
         for (const cat of CATEGORY_PRIORITY) {
             byCategory[cat] = [];
         }
-        for (const item of relevantEntities) {
+        for (const item of rankedEntities) {
             if (byCategory[item.category]) {
                 byCategory[item.category].push(item);
             }
@@ -375,7 +430,12 @@ export class PromptInjector {
 
                 const fields = this._getAllowedFields(item.category, sceneType, item.score || 1.0);
                 fieldMaps[item.category].set(item.entity.id, fields);
-                const entityText = this._formatSingleEntity(item.category, item.entity, fields);
+                const entityText = this._formatSingleEntity(
+                    item.category,
+                    item.entity,
+                    fields,
+                    item.category === 'goals' ? this._getGoalBeatMap(goalBeats, item.entity.id) : null,
+                );
                 const entityTokens = estimateTokens(entityText);
 
                 if (entityBudget !== Infinity && (currentTokens + entityTokens) > (totalBudget - beatBudget)) {
@@ -390,15 +450,20 @@ export class PromptInjector {
         }
 
         // Pass 2: Fill remaining budget with highest-scored entities
-        const remaining = relevantEntities.filter(
+        const remaining = rankedEntities.filter(
             item => !includedIds.has(`${item.category}:${item.entity.id}`),
         );
-        // Already sorted by score from the embedding service
+        // Already sorted by score from the embedding service or goal planner
 
         for (const item of remaining) {
             const fields = this._getAllowedFields(item.category, sceneType, item.score || 0);
             fieldMaps[item.category].set(item.entity.id, fields);
-            const entityText = this._formatSingleEntity(item.category, item.entity, fields);
+            const entityText = this._formatSingleEntity(
+                item.category,
+                item.entity,
+                fields,
+                item.category === 'goals' ? this._getGoalBeatMap(goalBeats, item.entity.id) : null,
+            );
             const entityTokens = estimateTokens(entityText);
 
             if (entityBudget !== Infinity && (currentTokens + entityTokens) > (totalBudget - beatBudget)) {
@@ -422,11 +487,8 @@ export class PromptInjector {
         if (included.locations.length > 0) {
             sections.push(this._formatLocations(included.locations, fieldMaps.locations));
         }
-        if (rankedGoals && rankedGoals.length > 0) {
-            const goalEntities = rankedGoals.map(g => g.entity);
-            sections.push(this._formatGoals(goalEntities, null, goalBeats));
-        } else if (included.goals.length > 0) {
-            sections.push(this._formatGoals(included.goals, fieldMaps.goals));
+        if (included.goals.length > 0) {
+            sections.push(this._formatGoals(included.goals, fieldMaps.goals, goalBeats));
         }
         if (included.events.length > 0) {
             sections.push(this._formatEvents(included.events, fieldMaps.events));
@@ -450,15 +512,13 @@ export class PromptInjector {
             sections.push(narrativeText);
         }
 
-        if (sections.length === 0) return '';
-
-        return `${l.worldStateOpen}\n${sections.join('\n\n')}\n${l.worldStateClose}`;
+        return this._composePrompt(sections, authorDirection);
     }
 
     /**
      * Format a single entity into text (used for token estimation during budget enforcement).
      */
-    _formatSingleEntity(category, entity, allowedFields = null) {
+    _formatSingleEntity(category, entity, allowedFields = null, goalBeats = null) {
         const fieldMap = allowedFields !== undefined ? new Map([[entity.id, allowedFields]]) : null;
         switch (category) {
             case 'mainCharacter':
@@ -468,7 +528,7 @@ export class PromptInjector {
             case 'locations':
                 return this._formatLocations([entity], fieldMap);
             case 'goals':
-                return this._formatGoals([entity], fieldMap);
+                return this._formatGoals([entity], fieldMap, goalBeats);
             case 'events':
                 return this._formatEvents([entity], fieldMap);
             default:
@@ -785,6 +845,37 @@ export class PromptInjector {
         }
 
         return lines.join('\n');
+    }
+
+    _formatAuthorDirection(authorDirection) {
+        if (!authorDirection || authorDirection.mode === 'auto') return '';
+        if (!authorDirection.text || !authorDirection.text.trim()) return '';
+
+        const l = this.labels;
+        const sourceLabel = authorDirection.source === 'suggested'
+            ? l.sourceSuggested
+            : l.sourceCustom;
+
+        return [
+            l.authorDirectionOpen,
+            `## ${l.authorDirection}`,
+            l.authorDirectionNote,
+            `${l.directionSource}: ${sourceLabel}`,
+            `${l.directionText}: ${authorDirection.text.trim()}`,
+            l.authorDirectionClose,
+        ].join('\n');
+    }
+
+    _composePrompt(sections, authorDirection) {
+        const l = this.labels;
+        const worldText = sections.length > 0
+            ? `${l.worldStateOpen}\n${sections.join('\n\n')}\n${l.worldStateClose}`
+            : '';
+        const authorText = this._formatAuthorDirection(authorDirection);
+
+        if (worldText && authorText) return `${worldText}\n\n${authorText}`;
+        if (worldText) return worldText;
+        return authorText;
     }
 
     /**

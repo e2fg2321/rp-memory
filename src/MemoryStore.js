@@ -7,9 +7,20 @@ export class MemoryStore {
         this._state = this._createEmptyState();
     }
 
+    _createEmptyAuthorDirection() {
+        return {
+            mode: 'auto',
+            source: 'auto',
+            text: '',
+            label: '',
+            suggestionId: '',
+            updatedTurn: 0,
+        };
+    }
+
     _createEmptyState() {
         return {
-            version: 2,
+            version: 3,
             lastExtractionTurn: 0,
             lastReflectionTurn: 0,
             extractionInProgress: false,
@@ -21,6 +32,7 @@ export class MemoryStore {
             events: {},
             beats: [],
             reflections: [],
+            authorDirection: this._createEmptyAuthorDirection(),
         };
     }
 
@@ -31,9 +43,9 @@ export class MemoryStore {
         }
 
         if (savedState.version === 1) {
-            // Migrate v1 → v2: convert plain string fields to provenance objects
+            // Migrate v1 state to the latest schema: provenance-wrapped fields + author direction support
             this._state = deepClone(savedState);
-            this._state.version = 2;
+            this._state.version = 3;
             this._state.extractionInProgress = false;
             this._state.lastReflectionTurn = 0;
             this._state.beats = [];
@@ -44,13 +56,17 @@ export class MemoryStore {
             this._migrateFieldsToProvenance();
             // Ensure aliases exist on all entities
             this._ensureAliases();
-        } else if (savedState.version === 2) {
+            this._ensureAuthorDirection();
+        } else if (savedState.version === 2 || savedState.version === 3) {
             this._state = deepClone(savedState);
+            this._state.version = 3;
             this._state.extractionInProgress = false;
             delete this._state._embeddings;
             // Ensure arrays exist (defensive)
             if (!Array.isArray(this._state.beats)) this._state.beats = [];
             if (!Array.isArray(this._state.reflections)) this._state.reflections = [];
+            this._ensureAliases();
+            this._ensureAuthorDirection();
         } else {
             this._state = this._createEmptyState();
         }
@@ -110,6 +126,26 @@ export class MemoryStore {
         }
     }
 
+    _ensureAuthorDirection() {
+        const fallback = this._createEmptyAuthorDirection();
+        const current = this._state.authorDirection;
+        if (!current || typeof current !== 'object') {
+            this._state.authorDirection = fallback;
+            return;
+        }
+
+        this._state.authorDirection = {
+            ...fallback,
+            ...current,
+            mode: ['auto', 'custom', 'suggested'].includes(current.mode) ? current.mode : 'auto',
+            source: ['auto', 'custom', 'suggested'].includes(current.source) ? current.source : 'auto',
+            text: typeof current.text === 'string' ? current.text : '',
+            label: typeof current.label === 'string' ? current.label : '',
+            suggestionId: typeof current.suggestionId === 'string' ? current.suggestionId : '',
+            updatedTurn: Number.isFinite(current.updatedTurn) ? current.updatedTurn : 0,
+        };
+    }
+
     clear() {
         this._state = this._createEmptyState();
     }
@@ -154,6 +190,43 @@ export class MemoryStore {
 
     setExtractionInProgress(val) {
         this._state.extractionInProgress = val;
+    }
+
+    // --- Author direction ---
+
+    getAuthorDirection() {
+        return deepClone(this._state.authorDirection || this._createEmptyAuthorDirection());
+    }
+
+    hasAuthorDirection() {
+        const direction = this._state.authorDirection;
+        return Boolean(direction?.mode !== 'auto' && direction?.text?.trim());
+    }
+
+    setAuthorDirection(direction) {
+        const fallback = this._createEmptyAuthorDirection();
+        const next = {
+            ...fallback,
+            ...(direction || {}),
+        };
+
+        next.mode = ['custom', 'suggested'].includes(next.mode) ? next.mode : 'custom';
+        next.source = ['custom', 'suggested'].includes(next.source) ? next.source : next.mode;
+        next.text = typeof next.text === 'string' ? next.text.trim() : '';
+        next.label = typeof next.label === 'string' ? next.label.trim() : '';
+        next.suggestionId = typeof next.suggestionId === 'string' ? next.suggestionId.trim() : '';
+        next.updatedTurn = Number.isFinite(next.updatedTurn) ? next.updatedTurn : this.getTurnCounter();
+
+        if (!next.text) {
+            this.clearAuthorDirection();
+            return;
+        }
+
+        this._state.authorDirection = next;
+    }
+
+    clearAuthorDirection() {
+        this._state.authorDirection = this._createEmptyAuthorDirection();
     }
 
     // --- Entity CRUD ---

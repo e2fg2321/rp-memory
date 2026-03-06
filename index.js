@@ -66,6 +66,7 @@ let cachedEmbeddingModelList = null;
 let cachedSTKey = null; // Cached SillyTavern API key for the session
 let activePanelCategory = null; // Currently shown category in floating data panel
 let extensionLocaleData = null; // Our own locale data (loaded from locales/*.json)
+const directionNudgeDismissals = new Map(); // chatId -> dismissed turn
 
 // ===================== Translation (own layer) =====================
 
@@ -503,6 +504,9 @@ function saveMemoryState() {
 
 function onChatChanged() {
     const context = getContext();
+    goalsManager?.clearAnalysis?.();
+    dismissDirectionNudge();
+    $('.rp-mem-direction-overlay, .rp-mem-ooc-overlay').remove();
 
     if (!context.chat || !context.chatId) {
         memoryStore.clear();
@@ -511,6 +515,7 @@ function onChatChanged() {
         }
         injectMemoryPrompt();
         renderMemoryUI();
+        renderDirectionButton();
         return;
     }
 
@@ -524,6 +529,7 @@ function onChatChanged() {
 
     injectMemoryPrompt();
     renderMemoryUI();
+    renderDirectionButton();
     debugLog('Chat changed, memory loaded', savedState ? 'from saved state' : 'fresh');
 }
 
@@ -581,26 +587,26 @@ async function injectMemoryPrompt() {
                 const injectionRanked = ranked.filter(item => item.entity.tier !== 3 && item.category !== 'goals');
                 const rankedGoals = goalsManager.getRankedGoals(currentTurn);
                 const goalBeats = goalsManager.getGoalBeats(rankedGoals.map(g => g.entity.id));
-                promptText = injector.format(memoryStore, injectionRanked, sceneType, currentTurn, rankedBeats, rankedReflections, rankedGoals, goalBeats, narrativeDirection);
+                promptText = injector.format(memoryStore, { relevantEntities: injectionRanked, sceneType, currentTurn, rankedBeats, reflections: rankedReflections, rankedGoals, goalBeats, narrativeDirection });
                 debugLog('Embedding-based injection:', injectionRanked.length, '/', ranked.length, 'entities (excluded', ranked.length - injectionRanked.length, 'tier-3), scene:', sceneType, ', goals:', rankedGoals.length);
             } else {
                 const reflections = memoryStore.getRecentReflections(5);
                 const rankedGoals = goalsManager.getRankedGoals(currentTurn);
                 const goalBeats = goalsManager.getGoalBeats(rankedGoals.map(g => g.entity.id));
-                promptText = injector.format(memoryStore, null, null, currentTurn, null, reflections, rankedGoals, goalBeats, narrativeDirection);
+                promptText = injector.format(memoryStore, { currentTurn, reflections, rankedGoals, goalBeats, narrativeDirection });
             }
         } catch (err) {
             console.warn('[RP Memory] Embedding ranking failed, falling back to full injection:', err.message);
             const reflections = memoryStore.getRecentReflections(5);
             const rankedGoals = goalsManager.getRankedGoals(currentTurn);
             const goalBeats = goalsManager.getGoalBeats(rankedGoals.map(g => g.entity.id));
-            promptText = injector.format(memoryStore, null, null, currentTurn, null, reflections, rankedGoals, goalBeats, narrativeDirection);
+            promptText = injector.format(memoryStore, { currentTurn, reflections, rankedGoals, goalBeats, narrativeDirection });
         }
     } else {
         const reflections = memoryStore.getRecentReflections(5);
         const rankedGoals = goalsManager.getRankedGoals(currentTurn);
         const goalBeats = goalsManager.getGoalBeats(rankedGoals.map(g => g.entity.id));
-        promptText = injector.format(memoryStore, null, null, currentTurn, null, reflections, rankedGoals, goalBeats, narrativeDirection);
+        promptText = injector.format(memoryStore, { currentTurn, reflections, rankedGoals, goalBeats, narrativeDirection });
     }
 
     if (s.debugMode && promptText) {
@@ -645,6 +651,24 @@ function getRecentMessageTexts(context, count) {
         .filter(Boolean);
 
     return messages;
+}
+
+function getRecentMessagesForGoalAnalysis(context, count) {
+    if (!context.chat?.length) return [];
+
+    const prioritizeUser = getSettings().userMessageWeight === 'high';
+
+    return context.chat
+        .filter(m => !m.is_system)
+        .slice(-count)
+        .map(m => ({
+            speaker: m.name || (m.is_user ? 'User' : 'Assistant'),
+            role: m.is_user ? 'user' : 'assistant',
+            priority: m.is_user && prioritizeUser ? 'high' : 'normal',
+            text: m.mes || '',
+            isUser: Boolean(m.is_user),
+        }))
+        .filter(m => m.text);
 }
 
 // ===================== Prompt Language =====================
@@ -1302,12 +1326,14 @@ async function onPreGeneration(data) {
 
     try {
         const context = getContext();
-        const recentMsgs = getRecentMessageTexts(context, s.messagesPerExtraction * 2);
+        const recentMsgs = getRecentMessagesForGoalAnalysis(context, s.messagesPerExtraction * 2);
         if (recentMsgs.length === 0) return;
 
         const currentTurn = memoryStore.getTurnCounter();
-        await goalsManager.analyze(recentMsgs, currentTurn);
+        const direction = memoryStore.getAuthorDirection();
+        await goalsManager.analyze(recentMsgs, currentTurn, direction);
         await injectMemoryPrompt();
+        checkDirectionNudge();
         debugLog('Pre-generation goal analysis complete, prompt updated');
     } catch (err) {
         console.warn('[RP Memory] Pre-generation goal analysis failed:', err.message);
@@ -1352,15 +1378,17 @@ async function triggerExtraction(context) {
         // Sync-mode analysis runs pre-generation via GENERATION_STARTED hook instead.
         if (getSettings().goalsIntentEnabled && getSettings().goalsIntentAsync) {
             const turnAtStart = memoryStore.getTurnCounter();
-            const recentMsgs = getRecentMessageTexts(context, getSettings().messagesPerExtraction * 2);
+            const recentMsgs = getRecentMessagesForGoalAnalysis(context, getSettings().messagesPerExtraction * 2);
+            const direction = memoryStore.getAuthorDirection();
 
-            goalsManager.analyze(recentMsgs, turnAtStart).then(() => {
+            goalsManager.analyze(recentMsgs, turnAtStart, direction).then(() => {
                 if (memoryStore.getTurnCounter() !== turnAtStart) {
                     goalsManager.clearAnalysis();
                     debugLog('Goal intent analysis discarded (turn advanced)');
                     return;
                 }
                 injectMemoryPrompt();
+                checkDirectionNudge();
                 debugLog('Goal intent analysis complete (async), prompt re-injected');
             }).catch(err => {
                 console.warn('[RP Memory] Goal intent analysis failed (async):', err.message);
@@ -1504,15 +1532,17 @@ async function forceExtract() {
         // Async-mode goal analysis post-extraction (sync mode uses GENERATION_STARTED hook)
         if (s.goalsIntentEnabled && s.goalsIntentAsync) {
             const turnAtStart = memoryStore.getTurnCounter();
-            const recentMsgs = getRecentMessageTexts(context, s.messagesPerExtraction * 2);
+            const recentMsgs = getRecentMessagesForGoalAnalysis(context, s.messagesPerExtraction * 2);
+            const direction = memoryStore.getAuthorDirection();
 
-            goalsManager.analyze(recentMsgs, turnAtStart).then(() => {
+            goalsManager.analyze(recentMsgs, turnAtStart, direction).then(() => {
                 if (memoryStore.getTurnCounter() !== turnAtStart) {
                     goalsManager.clearAnalysis();
                     debugLog('Goal intent analysis discarded (turn advanced)');
                     return;
                 }
                 injectMemoryPrompt();
+                checkDirectionNudge();
                 debugLog('Goal intent analysis complete (async), prompt re-injected');
             }).catch(err => {
                 console.warn('[RP Memory] Goal intent analysis failed (async):', err.message);
@@ -1803,6 +1833,173 @@ function populateGoalsIntentModelDropdown() {
     }
 }
 
+function truncateDirectionText(text, maxLength = 96) {
+    if (!text) return '';
+    return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+}
+
+function getFallbackDirectionSuggestions() {
+    return [
+        {
+            id: 'raise-stakes',
+            label: tt`Raise stakes`,
+            text: tt`Escalate tension and push the scene toward sharper consequences or confrontation.`,
+        },
+        {
+            id: 'slow-for-emotion',
+            label: tt`Slow for emotion`,
+            text: tt`Slow the pace and focus on emotional reactions, subtext, and character vulnerability.`,
+        },
+        {
+            id: 'let-npc-lead',
+            label: tt`Let NPC lead`,
+            text: tt`Give the other character more initiative so the next turn changes the scene instead of only reacting.`,
+        },
+        {
+            id: 'more-texture',
+            label: tt`More texture`,
+            text: tt`Lean into sensory detail and atmosphere so the scene feels more embodied and vivid.`,
+        },
+    ];
+}
+
+function getDirectionSuggestionsForUI() {
+    const currentTurn = memoryStore?.getTurnCounter?.() || 0;
+    const suggestions = goalsManager?.getDirectionSuggestions?.(currentTurn) || [];
+    return suggestions.length > 0 ? suggestions : getFallbackDirectionSuggestions();
+}
+
+function persistAuthorDirection(direction) {
+    if (!memoryStore) return;
+
+    if (!direction?.text?.trim()) {
+        clearAuthorDirection();
+        return;
+    }
+
+    memoryStore.setAuthorDirection({
+        ...direction,
+        updatedTurn: memoryStore.getTurnCounter(),
+    });
+    saveMemoryState();
+    injectMemoryPrompt();
+    renderDirectionButton();
+    dismissDirectionNudge();
+    debugLog('Author direction updated:', memoryStore.getAuthorDirection());
+}
+
+function clearAuthorDirection() {
+    if (!memoryStore) return;
+    memoryStore.clearAuthorDirection();
+    saveMemoryState();
+    injectMemoryPrompt();
+    renderDirectionButton();
+    debugLog('Author direction cleared');
+}
+
+function renderDirectionButton() {
+    const $btn = $('.rp-mem-nav-direction-btn');
+    if (!$btn.length || !memoryStore?.getAuthorDirection) return;
+
+    const direction = memoryStore.getAuthorDirection();
+    const isActive = Boolean(direction?.mode !== 'auto' && direction?.text?.trim());
+    const summary = direction?.label || truncateDirectionText(direction?.text || '', 72);
+
+    const currentTurn = memoryStore.getTurnCounter();
+    const directionUpdatedTurn = Number.isFinite(direction?.updatedTurn) ? direction.updatedTurn : -1;
+    const shouldPivot = isActive
+        && directionUpdatedTurn < currentTurn
+        && goalsManager?.shouldNudgeDirection?.(currentTurn);
+
+    $btn.toggleClass('active', isActive);
+    $btn.toggleClass('stale', shouldPivot);
+    $btn.attr('title', shouldPivot
+        ? tt`Scene direction (stale): ${summary}`
+        : isActive
+            ? tt`Scene direction: ${summary}`
+            : tt`Scene direction`);
+}
+
+// ===================== Direction Staleness Nudge =====================
+
+/**
+ * Check whether the current author direction is stale and fresh suggestions
+ * are available. If so, surface a compact nudge bar above the nav.
+ */
+function checkDirectionNudge() {
+    if (!memoryStore || !goalsManager) return;
+
+    const currentTurn = memoryStore.getTurnCounter();
+    const direction = memoryStore.getAuthorDirection();
+    const directionUpdatedTurn = Number.isFinite(direction?.updatedTurn) ? direction.updatedTurn : -1;
+    if (direction?.mode !== 'auto' && directionUpdatedTurn >= currentTurn) return;
+    if (!goalsManager.shouldNudgeDirection(currentTurn)) return;
+
+    const chatId = getContext()?.chatId;
+    const dismissedTurn = chatId ? (directionNudgeDismissals.get(chatId) ?? -1) : -1;
+    if (dismissedTurn >= currentTurn) return;
+
+    const suggestions = goalsManager.getDirectionSuggestions(currentTurn);
+    if (suggestions.length === 0) return;
+
+    renderDirectionNudge(suggestions);
+}
+
+function renderDirectionNudge(suggestions) {
+    // Don't stack nudges
+    if ($('.rp-mem-direction-nudge').length) return;
+    // Don't nudge while overlays are open
+    if ($('.rp-mem-direction-overlay').length) return;
+
+    const chipsHtml = suggestions.slice(0, 4).map(s => `
+        <div class="rp-mem-nudge-chip"
+             data-direction-id="${escapeHtml(s.id)}"
+             data-direction-label="${escapeHtml(s.label)}"
+             data-direction-text="${escapeHtml(s.text)}"
+             title="${escapeHtml(s.text)}">
+            ${escapeHtml(s.label)}
+        </div>`).join('');
+
+    const html = `
+    <div class="rp-mem-direction-nudge">
+        <div class="rp-mem-nudge-text">${tt`Scene has evolved — consider a new direction:`}</div>
+        <div class="rp-mem-nudge-chips">${chipsHtml}</div>
+        <div class="rp-mem-nudge-dismiss" title="${escapeHtml(tt`Dismiss`)}"><i class="fa-solid fa-xmark"></i></div>
+    </div>`;
+
+    const $wrapper = $('.rp-mem-wrapper');
+    if (!$wrapper.length) return;
+    $wrapper.find('.rp-mem-nav').before(html);
+
+    const $nudge = $wrapper.find('.rp-mem-direction-nudge');
+
+    $nudge.on('click', '.rp-mem-nudge-chip', function () {
+        const suggestion = {
+            mode: 'suggested',
+            source: 'suggested',
+            suggestionId: $(this).data('direction-id'),
+            label: $(this).data('direction-label'),
+            text: $(this).data('direction-text'),
+        };
+        persistAuthorDirection(suggestion);
+        $nudge.remove();
+        debugLog('Direction nudge accepted:', suggestion.label);
+    });
+
+    $nudge.on('click', '.rp-mem-nudge-dismiss', function () {
+        const chatId = getContext()?.chatId;
+        if (chatId) {
+            directionNudgeDismissals.set(chatId, memoryStore.getTurnCounter());
+        }
+        $nudge.remove();
+        debugLog('Direction nudge dismissed');
+    });
+}
+
+function dismissDirectionNudge() {
+    $('.rp-mem-direction-nudge').remove();
+}
+
 // ===================== Floating Nav + Data Panel =====================
 
 const CATEGORY_DEFS = [
@@ -1857,6 +2054,10 @@ function initFloatingUI() {
             <div class="rp-mem-nav-buttons">${catButtons}</div>
             <div class="rp-mem-nav-sep"></div>
             <div class="rp-mem-nav-actions">
+                <div class="rp-mem-nav-btn rp-mem-nav-direction-btn" title="${escapeHtml(tt`Scene direction`)}">
+                    <i class="fa-solid fa-compass"></i>
+                    <span>${tt`Guide`}</span>
+                </div>
                 <div class="rp-mem-nav-btn rp-mem-nav-ooc-btn" title="${escapeHtml(tt`Author correction`)}">
                     <i class="fa-solid fa-pen-to-square"></i>
                     <span>OOC</span>
@@ -1883,6 +2084,7 @@ function initFloatingUI() {
 
     // Bind nav events
     bindFloatingNavListeners();
+    renderDirectionButton();
 
     debugLog('Floating UI initialized (collapsed)');
 }
@@ -1917,6 +2119,12 @@ function bindFloatingNavListeners() {
         } else {
             forceExtract();
         }
+    });
+
+    // Direction button — toggle direction input overlay
+    $wrapper.on('click', '.rp-mem-nav-direction-btn', function (e) {
+        e.stopPropagation();
+        toggleDirectionOverlay();
     });
 
     // OOC button — toggle OOC input overlay
@@ -2410,6 +2618,140 @@ function closeEditOverlay() {
     $(document).off('keydown.rpMemOverlay');
 }
 
+// ===================== Direction Control =====================
+
+function toggleDirectionOverlay() {
+    const $existing = $('.rp-mem-direction-overlay');
+    if ($existing.length) {
+        $existing.remove();
+        return;
+    }
+
+    $('.rp-mem-ooc-overlay').remove();
+    dismissDirectionNudge();
+
+    const current = memoryStore?.getAuthorDirection?.() || {};
+    const suggestions = getDirectionSuggestionsForUI();
+    const activeSuggestionId = current.mode === 'suggested' ? current.suggestionId : '';
+    const suggestionHtml = suggestions.map((suggestion) => {
+        const activeClass = activeSuggestionId === suggestion.id ? ' active' : '';
+        return `
+        <div class="rp-mem-direction-suggestion${activeClass}"
+             data-direction-id="${escapeHtml(suggestion.id)}"
+             data-direction-label="${escapeHtml(suggestion.label)}"
+             data-direction-text="${escapeHtml(suggestion.text)}">
+            <div class="rp-mem-direction-suggestion-label">${escapeHtml(suggestion.label)}</div>
+            <div class="rp-mem-direction-suggestion-text">${escapeHtml(suggestion.text)}</div>
+        </div>`;
+    }).join('');
+
+    const sourceLabel = current.mode === 'suggested'
+        ? tt`Suggested`
+        : current.mode === 'custom'
+            ? tt`Custom`
+            : tt`Auto`;
+    const summary = current.text ? truncateDirectionText(current.text, 120) : tt`No active direction`;
+
+    const overlayHtml = `
+    <div class="rp-mem-direction-overlay" data-selected-suggestion-id="${escapeHtml(activeSuggestionId)}">
+        <div class="rp-mem-direction-header">
+            <div>
+                <div class="rp-mem-direction-title">${tt`Scene direction`}</div>
+                <div class="rp-mem-direction-subtitle">${tt`Steers future turns only — not canon memory`}</div>
+            </div>
+            <div class="rp-mem-direction-status">
+                <span class="rp-mem-direction-status-label">${escapeHtml(sourceLabel)}</span>
+                <span class="rp-mem-direction-status-text">${escapeHtml(summary)}</span>
+            </div>
+        </div>
+
+        <div class="rp-mem-direction-suggestions-label">${tt`Suggested directions`}</div>
+        <div class="rp-mem-direction-suggestions">${suggestionHtml}</div>
+
+        <textarea class="rp-mem-direction-input" placeholder="${escapeHtml(tt`e.g., keep it slow-burn, let Kira take the lead, and make the tension feel dangerous`)}" rows="3">${escapeHtml(current.text || '')}</textarea>
+        <div class="rp-mem-direction-hint">${tt`Click a suggestion to apply it immediately, or write your own direction and save it.`}</div>
+
+        <div class="rp-mem-direction-actions">
+            <div class="menu_button rp-mem-direction-save"><i class="fa-solid fa-check"></i> ${tt`Apply`}</div>
+            <div class="menu_button rp-mem-direction-clear"><i class="fa-solid fa-eraser"></i> ${tt`Clear`}</div>
+            <div class="menu_button rp-mem-direction-cancel"><i class="fa-solid fa-xmark"></i> ${tt`Cancel`}</div>
+        </div>
+    </div>`;
+
+    const $wrapper = $('.rp-mem-wrapper');
+    $wrapper.find('.rp-mem-nav').before(overlayHtml);
+
+    const $overlay = $wrapper.find('.rp-mem-direction-overlay');
+    $overlay.find('.rp-mem-direction-input').focus().select();
+
+    $overlay.on('click', '.rp-mem-direction-suggestion', function () {
+        const suggestion = {
+            mode: 'suggested',
+            source: 'suggested',
+            suggestionId: $(this).data('direction-id'),
+            label: $(this).data('direction-label'),
+            text: $(this).data('direction-text'),
+        };
+
+        persistAuthorDirection(suggestion);
+        $overlay.attr('data-selected-suggestion-id', suggestion.suggestionId);
+        $overlay.find('.rp-mem-direction-input').val(suggestion.text);
+        $overlay.find('.rp-mem-direction-suggestion').removeClass('active');
+        $(this).addClass('active');
+        $overlay.find('.rp-mem-direction-status-label').text(tt`Suggested`);
+        $overlay.find('.rp-mem-direction-status-text').text(truncateDirectionText(suggestion.text, 120));
+    });
+
+    $overlay.on('click', '.rp-mem-direction-save', function () {
+        const text = $overlay.find('.rp-mem-direction-input').val().trim();
+        if (!text) {
+            clearAuthorDirection();
+            $overlay.remove();
+            return;
+        }
+
+        const selectedSuggestionId = $overlay.attr('data-selected-suggestion-id') || '';
+        const selectedSuggestion = suggestions.find(suggestion => suggestion.id === selectedSuggestionId);
+        if (selectedSuggestion && selectedSuggestion.text === text) {
+            persistAuthorDirection({
+                mode: 'suggested',
+                source: 'suggested',
+                text: selectedSuggestion.text,
+                label: selectedSuggestion.label,
+                suggestionId: selectedSuggestion.id,
+            });
+        } else {
+            persistAuthorDirection({
+                mode: 'custom',
+                source: 'custom',
+                text,
+                label: '',
+                suggestionId: '',
+            });
+        }
+        $overlay.remove();
+    });
+
+    $overlay.on('click', '.rp-mem-direction-clear', function () {
+        clearAuthorDirection();
+        $overlay.remove();
+    });
+
+    $overlay.on('click', '.rp-mem-direction-cancel', function () {
+        $overlay.remove();
+    });
+
+    $overlay.on('keydown', '.rp-mem-direction-input', function (e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            $overlay.find('.rp-mem-direction-save').trigger('click');
+        }
+        if (e.key === 'Escape') {
+            $overlay.remove();
+        }
+    });
+}
+
 // ===================== OOC Correction =====================
 
 let pendingOOCCleanup = false;
@@ -2420,6 +2762,8 @@ function toggleOOCOverlay() {
         $existing.remove();
         return;
     }
+
+    $('.rp-mem-direction-overlay').remove();
 
     const overlayHtml = `
     <div class="rp-mem-ooc-overlay">
@@ -2575,8 +2919,8 @@ jQuery(async function () {
         apiClient = new OpenRouterClient(() => getSettings());
         apiClient.setKeyResolver(resolveApiKey);
         decayEngine = new DecayEngine(() => getSettings());
-        pipeline = new ExtractionPipeline(apiClient, memoryStore, () => getSettings(), decayEngine, getPromptLanguage);
         embeddingService = new EmbeddingService(apiClient, () => getSettings(), getPromptLanguage);
+        pipeline = new ExtractionPipeline(apiClient, memoryStore, () => getSettings(), decayEngine, getPromptLanguage, embeddingService);
         reflectionEngine = new ReflectionEngine(apiClient, memoryStore, () => getSettings(), getPromptLanguage);
         goalsManager = new GoalsManager(memoryStore, embeddingService, apiClient, () => getSettings(), getPromptLanguage);
         pipeline.goalsManager = goalsManager;
