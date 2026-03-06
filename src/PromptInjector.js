@@ -35,6 +35,11 @@ const LABELS = {
         currentLocation: 'Location',
         currentTime: 'Time',
         connections: 'Connections',
+        backstory: 'Backstory',
+        speechPatterns: 'Speech Patterns',
+        history: 'History',
+        goals: 'Goals',
+        keyEvents: 'Key Events',
         narrativeDirection: 'Narrative Direction',
         narrativeNote: '(Guidance based on current story trajectory — not prescriptive.)',
         pacing: 'Pacing',
@@ -77,6 +82,11 @@ const LABELS = {
         currentLocation: '当前位置',
         currentTime: '当前时间',
         connections: '连接',
+        backstory: '背景故事',
+        speechPatterns: '说话方式',
+        history: '历史',
+        goals: '目标',
+        keyEvents: '关键事件',
         narrativeDirection: '叙事方向',
         narrativeNote: '(基于当前故事轨迹的指导——非强制性。)',
         pacing: '节奏',
@@ -210,7 +220,7 @@ export class PromptInjector {
 
         const characters = this._getSortedEntities(memoryStore, 'characters');
         if (characters.length > 0) {
-            sections.push(this._formatCharacters(characters));
+            sections.push(this._formatCharacters(characters, null, memoryStore));
         }
 
         const locations = this._getSortedEntities(memoryStore, 'locations');
@@ -407,7 +417,7 @@ export class PromptInjector {
             sections.push(this._formatMainCharacter(included.mainCharacter[0], fieldMaps.mainCharacter));
         }
         if (included.characters.length > 0) {
-            sections.push(this._formatCharacters(included.characters, fieldMaps.characters));
+            sections.push(this._formatCharacters(included.characters, fieldMaps.characters, memoryStore));
         }
         if (included.locations.length > 0) {
             sections.push(this._formatLocations(included.locations, fieldMaps.locations));
@@ -497,7 +507,7 @@ export class PromptInjector {
 
         const categories = ['characters', 'locations', 'goals', 'events'];
         const formatters = {
-            characters: (list) => this._formatCharacters(list),
+            characters: (list) => this._formatCharacters(list, null, memoryStore),
             locations: (list) => this._formatLocations(list),
             goals: (list) => this._formatGoals(list),
             events: (list) => this._formatEvents(list),
@@ -573,7 +583,7 @@ export class PromptInjector {
         return lines.join('\n');
     }
 
-    _formatCharacters(characters, allowedFieldsMap = null) {
+    _formatCharacters(characters, allowedFieldsMap = null, memoryStore = null) {
         const l = this.labels;
         const lines = [`## ${l.knownCharacters}`];
         characters.sort((a, b) => (a.tier - b.tier) || (b.importance - a.importance));
@@ -588,9 +598,69 @@ export class PromptInjector {
             if (ok('status') && this._str(c.fields.status)) lines.push(`  ${l.status}: ${this._str(c.fields.status)}`);
             const rels = this._str(c.fields.relationships);
             if (ok('relationships') && rels) lines.push(`  ${l.relationships}: ${rels}`);
+
+            // Expanded profile — only for high-importance characters (>= 7)
+            if (c.importance >= 7) {
+                if (ok('backstory') && this._str(c.fields.backstory))
+                    lines.push(`  ${l.backstory}: ${this._str(c.fields.backstory)}`);
+                if (ok('speechPatterns') && this._str(c.fields.speechPatterns))
+                    lines.push(`  ${l.speechPatterns}: ${this._str(c.fields.speechPatterns)}`);
+                if (ok('history') && this._str(c.fields.history))
+                    lines.push(`  ${l.history}: ${this._str(c.fields.history)}`);
+                if (ok('goals') && this._str(c.fields.goals))
+                    lines.push(`  ${l.goals}: ${this._str(c.fields.goals)}`);
+
+                // Derived key events from the events system
+                const keyEvents = this._getCharacterKeyEvents(c, memoryStore);
+                if (keyEvents.length > 0) {
+                    lines.push(`  ${l.keyEvents}:`);
+                    for (const evt of keyEvents) {
+                        lines.push(`    - ${l.turn} ${evt.turn}: ${evt.name} — ${evt.description}`);
+                    }
+                }
+            }
         }
 
         return lines.join('\n');
+    }
+
+    /**
+     * Derive key events for a character from the events system.
+     * Looks up events where involvedEntities contains the character's name or aliases.
+     * Returns top 5 events by importance.
+     */
+    _getCharacterKeyEvents(character, memoryStore) {
+        if (!memoryStore) return [];
+
+        const allEvents = memoryStore.getAllEntities('events');
+        if (!allEvents || Object.keys(allEvents).length === 0) return [];
+
+        const nameVariants = [character.name.toLowerCase()];
+        if (character.aliases) {
+            for (const alias of character.aliases) {
+                nameVariants.push(alias.toLowerCase());
+            }
+        }
+
+        const matched = [];
+        for (const event of Object.values(allEvents)) {
+            const involved = this._str(event.fields.involvedEntities).toLowerCase();
+            if (!involved) continue;
+
+            const isInvolved = nameVariants.some(name => involved.includes(name));
+            if (isInvolved) {
+                matched.push({
+                    turn: unwrapField(event.fields.turn) || event.createdTurn || 0,
+                    name: event.name,
+                    description: this._str(event.fields.description),
+                    importance: event.importance || 5,
+                });
+            }
+        }
+
+        // Sort by importance descending, limit to top 5
+        matched.sort((a, b) => b.importance - a.importance);
+        return matched.slice(0, 5);
     }
 
     _formatLocations(locations, allowedFieldsMap = null) {

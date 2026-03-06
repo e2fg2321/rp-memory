@@ -1,0 +1,12 @@
+# secrets
+.env
+.env.*
+
+# OS
+.DS_Store
+
+# dependencies
+node_modules/
+
+# claude code
+.claude/

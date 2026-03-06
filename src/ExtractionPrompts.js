@@ -89,7 +89,11 @@ OUTPUT FORMAT:
         "mood": "Current emotional state or disposition (e.g. anxious, cheerful, brooding)",
         "status": "Current state: alive/dead/injured/missing + details",
         "relationships": "string — e.g. 'Kira: romantic tension, Marcus: uneasy alliance'",
-        "present": "yes or no — can this character directly interact with the MC right now?"
+        "present": "yes or no — can this character directly interact with the MC right now?",
+        "backstory": "Revealed background, origin, lore — only what has been disclosed in the narrative so far",
+        "speechPatterns": "How this character speaks — verbal tics, accent, vocabulary level, mannerisms",
+        "history": "Concise narrative summary of how this character has behaved and changed — their arc, choices, attitude shifts (not what happened — that's tracked in events)",
+        "goals": "What this NPC wants — motivations, desires, active objectives"
       }
     }
   ]
@@ -355,7 +359,7 @@ Example:
 === CATEGORY 1: characters (NPCs) ===
 Track NON-PLAYER characters mentioned in the conversation. Do NOT include the user's own character here.
 
-Fields: description (appearance/traits), personality (stable core traits — update rarely), mood (current emotional state — update frequently, e.g. "anxious", "cheerful", "brooding"), status (alive/dead/injured/missing + details), relationships (string, e.g. "Kira: romantic tension, Marcus: uneasy alliance"), present ("yes" or "no" — can this character directly interact with the MC right now?)
+Fields: description (appearance/traits), personality (stable core traits — update rarely), mood (current emotional state — update frequently, e.g. "anxious", "cheerful", "brooding"), status (alive/dead/injured/missing + details), relationships (string, e.g. "Kira: romantic tension, Marcus: uneasy alliance"), present ("yes" or "no" — can this character directly interact with the MC right now?), backstory (revealed background, origin, lore — only what has been disclosed so far), speechPatterns (how they speak — verbal tics, accent, vocabulary level, mannerisms), history (concise summary of how this character has behaved and changed — arc, choices, attitude shifts — not what happened, that's in events), goals (what this NPC wants — motivations, desires, active objectives)
 
 Importance: 9-10 central plot character/love interest | 6-8 named NPC with plot relevance | 3-5 minor named NPC | 1-2 background character
 
@@ -406,7 +410,10 @@ Fields: text (1-2 sentence description of what happened), participants (array of
 importance (1-10), type ("conflict" | "discovery" | "relationship" | "decision" | "transition" | "revelation" | "consequence")
 
 Extract 1-4 beats per extraction. Focus on actions and changes, not static descriptions.
-Beats are append-only — never update or delete.`;
+Beats are append-only — never update or delete.
+
+=== RECENCY SIGNALS ===
+Entities in the catalog include an "updatedAgo" field showing how many turns since last update. Entities marked as RECENTLY EXTRACTED were processed in the last 1-2 cycles — their current field values are shown. Review them against the current messages: update if the messages reveal changes or new detail, omit from output if already accurate.`;
 
   // ==================== Unified (Chinese) ====================
 
@@ -438,7 +445,7 @@ ${COMMON_RULES_ZH}
 === 类别 1：characters（NPC 角色）===
 追踪对话中提到的非玩家角色（NPC）。不要将用户的角色包含在此类别中。
 
-字段：description（外貌/特征）、personality（性格 — 稳定核心特质，少更新）、mood（当前情绪状态 — 频繁更新，如"焦虑"、"开朗"、"沉思"）、status（alive/dead/injured/missing + 详情）、relationships（字符串，例如 "Kira：暧昧关系，Marcus：不稳定的联盟"）、present（"yes" 或 "no" — 该角色现在能否与主角直接互动？）
+字段：description（外貌/特征）、personality（性格 — 稳定核心特质，少更新）、mood（当前情绪状态 — 频繁更新，如"焦虑"、"开朗"、"沉思"）、status（alive/dead/injured/missing + 详情）、relationships（字符串，例如 "Kira：暧昧关系，Marcus：不稳定的联盟"）、present（"yes" 或 "no" — 该角色现在能否与主角直接互动？）、backstory（已揭示的背景、起源、设定 — 仅限叙事中已披露的内容）、speechPatterns（角色的说话方式 — 口头禅、口音、用词水平、行为举止）、history（该角色行为和变化的简要叙事总结 — 其弧线、选择、态度转变 — 不是发生了什么，那在事件中追踪）、goals（该NPC想要什么 — 动机、欲望、活跃目标）
 
 重要度：9-10 核心剧情角色/恋爱对象 | 6-8 有剧情关联的命名NPC | 3-5 次要命名NPC | 1-2 背景角色
 
@@ -489,7 +496,10 @@ ${COMMON_RULES_ZH}
 importance（1-10）、type（"conflict" | "discovery" | "relationship" | "decision" | "transition" | "revelation" | "consequence"）
 
 每次提取1-4个节拍。关注行动和变化，而非静态描述。
-节拍仅追加 — 永远不更新或删除。`;
+节拍仅追加 — 永远不更新或删除。
+
+=== 时效信号 ===
+实体目录中包含 "updatedAgo" 字段，显示距上次更新已过多少轮。标记为"最近提取"的实体是在最近1-2个周期中处理的 — 其当前字段值已显示。请对照当前消息审查它们：如果消息揭示了变化或新细节则更新，如果已经准确则从输出中省略。`;
 
   static getUnifiedUserPrompt(messages, currentState, userName, charName, lang = 'en', scenarioContext = '', precedingContext = '') {
     const stateSections = [];
@@ -516,10 +526,20 @@ importance（1-10）、type（"conflict" | "discovery" | "relationship" | "decis
 
     const pinnedBlock = stateSections.length > 0 ? stateSections.join('\n\n') : '';
 
-    // Compact entity catalog for dedup (all known entities: id, name, aliases)
+    // Compact entity catalog for dedup (all known entities: id, name, aliases, updatedAgo)
     const catalog = currentState.entityCatalog || [];
     const catalogBlock = catalog.length > 0
       ? `=== ALL KNOWN ENTITIES (use these IDs, do NOT create duplicates) ===\n${JSON.stringify(catalog)}`
+      : '';
+
+    // Recently-updated Tier 2 entities — show full detail so the agent can refine
+    const recent = currentState.recentUpdates || {};
+    const recentSections = [];
+    for (const [cat, entities] of Object.entries(recent)) {
+      if (Object.keys(entities).length > 0) recentSections.push(`--- ${cat} ---\n${JSON.stringify(entities)}`);
+    }
+    const recentBlock = recentSections.length > 0
+      ? `=== RECENTLY EXTRACTED (review against current messages — update if changed, omit if accurate) ===\n${recentSections.join('\n')}`
       : '';
 
     if (lang === 'zh') {
@@ -527,6 +547,7 @@ importance（1-10）、type（"conflict" | "discovery" | "relationship" | "decis
       if (scenarioContext) parts.push(`=== 角色设定 ===\n${scenarioContext}`);
       if (catalogBlock) parts.push(catalogBlock);
       if (pinnedBlock) parts.push(`置顶实体详情（不要重复创建）：\n${pinnedBlock}`);
+      if (recentBlock) parts.push(recentBlock);
       if (precedingContext) parts.push(`=== 前文（仅供上下文参考，不从此部分提取）===\n${precedingContext}`);
       parts.push(`=== 需要提取的消息 ===\n${messages}`);
       parts.push(`用户的角色是 "${userName}" — 仅在 mainCharacter 类别中追踪他们（id 为 "main-character"），不要放在 characters 中。
@@ -541,6 +562,7 @@ importance（1-10）、type（"conflict" | "discovery" | "relationship" | "decis
     if (scenarioContext) parts.push(`=== CHARACTER SYSTEM PROMPT ===\n${scenarioContext}`);
     if (catalogBlock) parts.push(catalogBlock);
     if (pinnedBlock) parts.push(`PINNED ENTITY DETAILS (do not re-create):\n${pinnedBlock}`);
+    if (recentBlock) parts.push(recentBlock);
     if (precedingContext) parts.push(`=== PRECEDING CONTEXT (for reference only — do NOT extract from this section) ===\n${precedingContext}`);
     parts.push(`=== MESSAGES TO EXTRACT FROM ===\n${messages}`);
     parts.push(`The user's character is "${userName}" — track them ONLY in the mainCharacter category (id "main-character"), not in characters.

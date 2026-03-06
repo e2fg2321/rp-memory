@@ -15,6 +15,7 @@ const MUTABLE_FIELDS = new Set([
     'currentLocation', 'currentTime', 'status', 'conditions', 'buffs',
     'health', 'inventory', 'present', 'progress', 'blockers',
     'atmosphere', 'skills', 'connections', 'relationships',
+    'mood', 'history', 'goals',
 ]);
 
 /** Patterns that look like prompt injection attempts */
@@ -312,6 +313,8 @@ export class ExtractionPipeline {
      * Unwraps provenance fields to plain strings for the LLM prompt.
      */
     _buildExtractionState() {
+        const currentTurn = this.memoryStore.getTurnCounter();
+
         const stripEntity = (entity) => {
             const plainFields = {};
             if (entity.fields) {
@@ -343,19 +346,46 @@ export class ExtractionPipeline {
         // Tier 3 are archived and unlikely to be re-mentioned — skip to save prompt tokens.
         // Cap at 50 entries to prevent prompt bloat in long sessions.
         const entityCatalog = [];
+        // Track Tier 1 IDs so we don't duplicate them in recentUpdates
+        const tier1Ids = new Set();
+        // Collect recently-updated Tier 2 entities for the RECENTLY EXTRACTED section
+        const recentCandidates = [];
 
         if (mc) {
-            entityCatalog.push({ id: mc.id, name: mc.name, aliases: mc.aliases || [] });
+            const updatedAgo = currentTurn - (mc.lastMentionedTurn || 0);
+            entityCatalog.push({ id: mc.id, name: mc.name, aliases: mc.aliases || [], updatedAgo });
         }
 
         for (const cat of CATEGORIES) {
             const all = this.memoryStore.getAllEntities(cat);
             for (const [id, entity] of Object.entries(all)) {
+                const updatedAgo = currentTurn - (entity.lastMentionedTurn || 0);
                 if (entity.tier <= 2) {
-                    entityCatalog.push({ id, name: entity.name, aliases: entity.aliases || [], _imp: entity.importance || 5 });
+                    entityCatalog.push({ id, name: entity.name, aliases: entity.aliases || [], updatedAgo, _imp: entity.importance || 5 });
                 }
-                if (entity.tier === 1) state[cat][id] = stripEntity(entity);
+                if (entity.tier === 1) {
+                    state[cat][id] = stripEntity(entity);
+                    tier1Ids.add(id);
+                } else if (entity.tier === 2 && updatedAgo <= 2) {
+                    recentCandidates.push({ cat, id, entity, updatedAgo, _imp: entity.importance || 5 });
+                }
             }
+        }
+
+        // Build recentUpdates: Tier 2 entities updated in last 1-2 turns, not already pinned
+        // Sort by importance descending, cap at 15
+        recentCandidates.sort((a, b) => (b._imp) - (a._imp));
+        const recentUpdates = {};
+        let recentCount = 0;
+        for (const { cat, id, entity } of recentCandidates) {
+            if (tier1Ids.has(id)) continue;
+            if (recentCount >= 15) break;
+            if (!recentUpdates[cat]) recentUpdates[cat] = {};
+            recentUpdates[cat][id] = stripEntity(entity);
+            recentCount++;
+        }
+        if (recentCount > 0) {
+            state.recentUpdates = recentUpdates;
         }
 
         // Sort by importance descending and cap at 50

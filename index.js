@@ -906,6 +906,10 @@ const FIELD_DEFS = {
         { key: 'mood', label: 'Mood', type: 'text' },
         { key: 'status', label: 'Status', type: 'text' },
         { key: 'relationships', label: 'Relationships', type: 'textarea' },
+        { key: 'backstory', label: 'Backstory', type: 'textarea' },
+        { key: 'speechPatterns', label: 'Speech Patterns', type: 'textarea' },
+        { key: 'history', label: 'History', type: 'textarea' },
+        { key: 'goals', label: 'Goals', type: 'textarea' },
         { key: '_aliases', label: 'Aliases', type: 'text', meta: true },
     ],
     locations: [

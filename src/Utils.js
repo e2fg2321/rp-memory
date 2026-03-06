@@ -84,6 +84,10 @@ export function createEmptyEntity(category, name, turn = 0) {
                 mood: '',
                 status: '',
                 relationships: '',
+                backstory: '',
+                speechPatterns: '',
+                history: '',
+                goals: '',
             };
             break;
         case 'locations':
