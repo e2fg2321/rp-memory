@@ -12,6 +12,8 @@ export class EmbeddingService {
         this._contextCache = null; // { hash, embedding }
         this._sceneAnchors = null; // Map<string, number[]> — scene type → embedding
         this._sceneAnchorsLang = null; // language used for cached scene anchors
+        this._lastSceneType = null; // previous scene type for hysteresis
+        this._lastSceneScores = null; // previous scene scores for smoothing
     }
 
     /**
@@ -43,7 +45,7 @@ export class EmbeddingService {
      * Get the embedding for recent chat context.
      */
     async getContextEmbedding(messages) {
-        const hash = messages.length + ':' + messages.join('|').slice(-200);
+        const hash = this._hashContext(messages);
         if (this._contextCache && this._contextCache.hash === hash) {
             return this._contextCache.embedding;
         }
@@ -77,25 +79,37 @@ export class EmbeddingService {
     /**
      * Detect the current scene type by comparing a context embedding
      * against cached scene anchor embeddings.
+     * Uses EMA smoothing (α=0.6) to prevent oscillation between close types.
      */
     detectSceneType(contextEmbedding) {
         if (!this._sceneAnchors) {
             return { type: 'downtime', scores: {} };
         }
 
+        const rawScores = {};
+        for (const [type, anchorEmb] of this._sceneAnchors.entries()) {
+            rawScores[type] = this.cosineSimilarity(contextEmbedding, anchorEmb);
+        }
+
+        // EMA smoothing: blend current scores with previous scores
+        const alpha = 0.6; // weight toward current observation
         const scores = {};
+        for (const type of Object.keys(rawScores)) {
+            const prev = this._lastSceneScores?.[type] ?? rawScores[type];
+            scores[type] = alpha * rawScores[type] + (1 - alpha) * prev;
+        }
+        this._lastSceneScores = scores;
+
         let bestType = 'downtime';
         let bestScore = -Infinity;
-
-        for (const [type, anchorEmb] of this._sceneAnchors.entries()) {
-            const score = this.cosineSimilarity(contextEmbedding, anchorEmb);
-            scores[type] = score;
+        for (const [type, score] of Object.entries(scores)) {
             if (score > bestScore) {
                 bestScore = score;
                 bestType = type;
             }
         }
 
+        this._lastSceneType = bestType;
         return { type: bestType, scores };
     }
 
@@ -300,7 +314,7 @@ export class EmbeddingService {
             }
         }
 
-        // Score each reflection
+        // Score each reflection (importance decays with age so old reflections fade)
         const ranked = [];
         for (const ref of reflections) {
             const refEmbedding = this._reflectionCache.get(ref.id);
@@ -308,7 +322,10 @@ export class EmbeddingService {
 
             const turnsSince = currentTurn - (ref.storyTurn || 0);
             const recency = 1 / (1 + turnsSince * 0.1);
-            const importance = (ref.importance || 5) / 10;
+            const rawImportance = (ref.importance || 5) / 10;
+            // Decay importance: halve weight over ~30 turns
+            const importanceDecay = Math.pow(0.977, turnsSince);
+            const importance = rawImportance * importanceDecay;
             const score = 0.25 * recency + 0.25 * importance + 0.5 * cosineSim;
 
             ranked.push({ reflection: ref, score });
@@ -394,6 +411,19 @@ export class EmbeddingService {
     }
 
     /**
+     * FNV-1a hash for context cache key. Fast, low-collision.
+     */
+    _hashContext(messages) {
+        const str = messages.join('|');
+        let hash = 0x811c9dc5; // FNV offset basis
+        for (let i = 0; i < str.length; i++) {
+            hash ^= str.charCodeAt(i);
+            hash = (hash * 0x01000193) | 0; // FNV prime, keep 32-bit
+        }
+        return messages.length + ':' + (hash >>> 0).toString(36);
+    }
+
+    /**
      * Invalidate the cached embedding for a specific entity.
      */
     invalidateEntity(category, entityId) {
@@ -425,6 +455,8 @@ export class EmbeddingService {
         this._contextCache = null;
         this._sceneAnchors = null;
         this._sceneAnchorsLang = null;
+        this._lastSceneType = null;
+        this._lastSceneScores = null;
     }
 
     /**
@@ -481,6 +513,8 @@ export class EmbeddingService {
         this._contextCache = null;
         this._sceneAnchors = null;
         this._sceneAnchorsLang = null;
+        this._lastSceneType = null;
+        this._lastSceneScores = null;
 
         if (!savedState || !savedState.embeddings) return;
 

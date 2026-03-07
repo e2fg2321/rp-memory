@@ -14,12 +14,16 @@ export function generateId(name) {
 }
 
 /**
- * Rough token estimate (1 token ≈ 4 chars for English text).
- * Not exact, but good enough for budget warnings.
+ * Rough token estimate, adjusted for CJK text.
+ * English: ~4 chars/token. CJK: ~1.5 chars/token.
+ * Uses a weighted average based on CJK character ratio.
  */
 export function estimateTokens(text) {
     if (!text) return 0;
-    return Math.ceil(text.length / 4);
+    const cjkMatches = text.match(/[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]/g);
+    const cjkCount = cjkMatches ? cjkMatches.length : 0;
+    const nonCjkCount = text.length - cjkCount;
+    return Math.ceil(nonCjkCount / 4 + cjkCount / 1.5);
 }
 
 /**

@@ -2813,14 +2813,14 @@ async function handleOOCSubmit(text) {
     debugLog('OOC directive submitted:', text);
 
     // 1. Inject OOC as temporary system prompt at depth 0
-    const oocPrompt = `[Author Correction: ${text}. Rewrite the last response incorporating this change.]`;
+    const oocPrompt = `Author Correction: ${text}. Rewrite the last response incorporating this change.`;
     setExtensionPrompt(
         'rp_memory_ooc',
         oocPrompt,
         extension_prompt_types.IN_CHAT,
         0,
         false,
-        extension_prompt_roles.SYSTEM,
+        extension_prompt_roles.USER,
     );
 
     // 2. Set cleanup flag

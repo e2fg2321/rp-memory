@@ -280,7 +280,7 @@ export class GoalsManager {
 
         try {
             const model = settings.goalsIntentModel || settings.model;
-            const response = await this.apiClient.chatCompletion(promptMessages, null, model);
+            const response = await this.apiClient.chatCompletion(promptMessages, null, model, { temperature: 0.25 });
             const parsed = this._parseAnalysisResponse(response);
 
             if (parsed) {

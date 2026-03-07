@@ -29,8 +29,9 @@ export class OpenRouterClient {
      * @param {Array} messages - Chat messages
      * @param {AbortSignal} [signal] - Optional abort signal to cancel the request
      * @param {string} [modelOverride] - Optional model ID to use instead of settings.model
+     * @param {object} [opts] - Optional overrides: { temperature }
      */
-    async chatCompletion(messages, signal = null, modelOverride = null) {
+    async chatCompletion(messages, signal = null, modelOverride = null, opts = {}) {
         const settings = this.getSettings();
         const apiKey = await this.resolveKey();
 
@@ -41,7 +42,7 @@ export class OpenRouterClient {
         const body = {
             model: modelOverride || settings.model,
             messages,
-            temperature: 0.1,
+            temperature: opts.temperature ?? 0.1,
             max_tokens: 2048,
             response_format: { type: 'json_object' },
         };

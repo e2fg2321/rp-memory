@@ -91,7 +91,7 @@ export class ReflectionEngine {
 
         try {
             const signal = this._abortController.signal;
-            const response = await this.apiClient.chatCompletion(messages, signal);
+            const response = await this.apiClient.chatCompletion(messages, signal, null, { temperature: 0.3 });
             const reflections = this._parseReflectionResponse(response);
 
             if (reflections && reflections.length > 0) {
