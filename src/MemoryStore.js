@@ -20,7 +20,7 @@ export class MemoryStore {
 
     _createEmptyState() {
         return {
-            version: 3,
+            version: 4,
             lastExtractionTurn: 0,
             lastReflectionTurn: 0,
             extractionInProgress: false,
@@ -33,6 +33,7 @@ export class MemoryStore {
             beats: [],
             reflections: [],
             authorDirection: this._createEmptyAuthorDirection(),
+            changeLog: [],
         };
     }
 
@@ -45,11 +46,12 @@ export class MemoryStore {
         if (savedState.version === 1) {
             // Migrate v1 state to the latest schema: provenance-wrapped fields + author direction support
             this._state = deepClone(savedState);
-            this._state.version = 3;
+            this._state.version = 4;
             this._state.extractionInProgress = false;
             this._state.lastReflectionTurn = 0;
             this._state.beats = [];
             this._state.reflections = [];
+            this._state.changeLog = [];
             delete this._state._embeddings;
 
             // Migrate field values to provenance format
@@ -57,14 +59,15 @@ export class MemoryStore {
             // Ensure aliases exist on all entities
             this._ensureAliases();
             this._ensureAuthorDirection();
-        } else if (savedState.version === 2 || savedState.version === 3) {
+        } else if (savedState.version === 2 || savedState.version === 3 || savedState.version === 4) {
             this._state = deepClone(savedState);
-            this._state.version = 3;
+            this._state.version = 4;
             this._state.extractionInProgress = false;
             delete this._state._embeddings;
             // Ensure arrays exist (defensive)
             if (!Array.isArray(this._state.beats)) this._state.beats = [];
             if (!Array.isArray(this._state.reflections)) this._state.reflections = [];
+            if (!Array.isArray(this._state.changeLog)) this._state.changeLog = [];
             this._ensureAliases();
             this._ensureAuthorDirection();
         } else {
@@ -301,7 +304,47 @@ export class MemoryStore {
             events: Object.keys(this._state.events).length,
             beats: this._state.beats.length,
             reflections: this._state.reflections.length,
+            changes: this._state.changeLog.length,
         };
+    }
+
+    recordChange(change) {
+        if (!change || typeof change !== 'object') return null;
+
+        const entry = {
+            id: typeof change.id === 'string' && change.id.trim()
+                ? change.id.trim()
+                : `change-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            turn: Number.isFinite(change.turn) ? change.turn : this.getTurnCounter(),
+            createdAt: Number.isFinite(change.createdAt) ? change.createdAt : Date.now(),
+            source: ['extraction', 'ooc', 'manual', 'system'].includes(change.source)
+                ? change.source
+                : 'system',
+            action: typeof change.action === 'string' && change.action.trim()
+                ? change.action.trim()
+                : 'updated',
+            category: typeof change.category === 'string' ? change.category : '',
+            entityId: typeof change.entityId === 'string' ? change.entityId : '',
+            entityName: typeof change.entityName === 'string' ? change.entityName : '',
+            details: Array.isArray(change.details)
+                ? deepClone(change.details).slice(0, 12)
+                : [],
+            meta: change.meta && typeof change.meta === 'object'
+                ? deepClone(change.meta)
+                : null,
+        };
+
+        this._state.changeLog.unshift(entry);
+        this._state.changeLog = this._state.changeLog.slice(0, 120);
+        return entry;
+    }
+
+    getRecentChanges(n = 40) {
+        return this._state.changeLog.slice(0, n).map(change => deepClone(change));
+    }
+
+    clearChangeLog() {
+        this._state.changeLog = [];
     }
 
     /**

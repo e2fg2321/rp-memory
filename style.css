@@ -1,12 +1,14 @@
 /* ============ Tabs ============ */
 .rp-mem-tabs {
     display: flex;
+    flex-wrap: wrap;
     gap: 4px;
     margin-bottom: 8px;
 }
 
 .rp-mem-tab {
     flex: 1;
+    min-width: 88px;
     text-align: center;
     font-size: 0.85em;
     padding: 4px 8px;
@@ -21,6 +23,12 @@
 
 .rp-mem-tab-content {
     min-height: 100px;
+}
+
+.rp-mem-tab-hint {
+    font-size: 0.82em;
+    opacity: 0.68;
+    margin-bottom: 10px;
 }
 
 /* ============ Status / Badges ============ */
@@ -364,6 +372,164 @@
 .rp-mem-conflict-actions .menu_button {
     font-size: 0.8em;
     padding: 2px 8px;
+}
+
+/* ============ Recent Changes ============ */
+.rp-mem-change-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.rp-mem-change-card {
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255,255,255,0.1));
+    border-radius: 10px;
+    background: linear-gradient(
+        180deg,
+        var(--SmartThemeBlurTintColor, rgba(30,30,45,0.5)),
+        rgba(0, 0, 0, 0.08)
+    );
+    overflow: hidden;
+}
+
+.rp-mem-change-card[open] {
+    border-color: var(--SmartThemeQuoteColor, rgba(136,136,200,0.45));
+}
+
+.rp-mem-change-summary {
+    list-style: none;
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    align-items: flex-start;
+    padding: 10px 12px;
+    cursor: pointer;
+}
+
+.rp-mem-change-summary::after {
+    content: '+';
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.06);
+    font-size: 1em;
+    line-height: 1;
+    flex-shrink: 0;
+}
+
+.rp-mem-change-card[open] .rp-mem-change-summary::after {
+    content: '−';
+}
+
+.rp-mem-change-summary::-webkit-details-marker {
+    display: none;
+}
+
+.rp-mem-change-summary-main {
+    min-width: 0;
+    flex: 1;
+}
+
+.rp-mem-change-title {
+    font-weight: 700;
+    font-size: 0.9em;
+    margin-bottom: 2px;
+}
+
+.rp-mem-change-target {
+    font-size: 0.82em;
+    opacity: 0.72;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.rp-mem-change-summary-meta {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    align-items: center;
+    font-size: 0.72em;
+    flex-shrink: 0;
+}
+
+.rp-mem-change-source,
+.rp-mem-change-turn {
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--SmartThemeBlurTintColor, rgba(0,0,0,0.22));
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+.rp-mem-change-source-extraction {
+    background: rgba(56, 120, 255, 0.18);
+}
+
+.rp-mem-change-source-ooc {
+    background: rgba(255, 176, 59, 0.22);
+}
+
+.rp-mem-change-source-manual {
+    background: rgba(89, 207, 156, 0.18);
+}
+
+.rp-mem-change-source-system {
+    background: rgba(160, 160, 160, 0.18);
+}
+
+.rp-mem-change-body {
+    padding: 0 12px 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.rp-mem-change-detail {
+    padding-top: 10px;
+}
+
+.rp-mem-change-detail-label {
+    font-size: 0.73em;
+    font-weight: 700;
+    letter-spacing: 0.25px;
+    text-transform: uppercase;
+    opacity: 0.66;
+    margin-bottom: 4px;
+}
+
+.rp-mem-change-detail-values {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.rp-mem-change-detail-before,
+.rp-mem-change-detail-after {
+    border-radius: 8px;
+    padding: 6px 8px;
+    font-size: 0.82em;
+    line-height: 1.35;
+    word-break: break-word;
+}
+
+.rp-mem-change-detail-before {
+    background: rgba(255, 95, 95, 0.1);
+    color: #ffb4b4;
+}
+
+.rp-mem-change-detail-after {
+    background: rgba(104, 214, 146, 0.12);
+    color: #c8ffd8;
+}
+
+.rp-mem-change-note,
+.rp-mem-change-more {
+    padding-top: 10px;
+    font-size: 0.82em;
+    opacity: 0.74;
 }
 
 /* ============ ST Key Status ============ */

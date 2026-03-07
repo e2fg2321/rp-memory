@@ -62,6 +62,80 @@ export function updateFieldProvenance(existing, newValue, turn) {
     return wrapField(newValue, turn);
 }
 
+function normalizeChangeValue(value) {
+    const unwrapped = unwrapField(value);
+    if (unwrapped === null || unwrapped === undefined) return '';
+
+    if (Array.isArray(unwrapped)) {
+        return unwrapped.map((item) => {
+            if (item === null || item === undefined) return '';
+            if (typeof item === 'object') return JSON.stringify(item);
+            return String(item);
+        }).filter(Boolean).join(', ');
+    }
+
+    if (typeof unwrapped === 'object') {
+        return JSON.stringify(unwrapped);
+    }
+
+    return String(unwrapped);
+}
+
+function pushChangeDetail(details, kind, field, oldValue, newValue) {
+    const before = oldValue ?? '';
+    const after = newValue ?? '';
+    if (before === after) return;
+    details.push({ kind, field, oldValue: before, newValue: after });
+}
+
+/**
+ * Diff the user-visible parts of an entity snapshot.
+ * Ignores bookkeeping fields such as timestamps, source, and conflicts.
+ */
+export function diffEntitySnapshots(before, after) {
+    const details = [];
+
+    pushChangeDetail(details, 'meta', 'name', before?.name || '', after?.name || '');
+    pushChangeDetail(
+        details,
+        'meta',
+        'aliases',
+        (before?.aliases || []).join(', '),
+        (after?.aliases || []).join(', '),
+    );
+    pushChangeDetail(
+        details,
+        'meta',
+        'tier',
+        before?.tier === undefined ? '' : String(before.tier),
+        after?.tier === undefined ? '' : String(after.tier),
+    );
+    pushChangeDetail(
+        details,
+        'meta',
+        'importance',
+        before?.importance === undefined ? '' : String(before.importance),
+        after?.importance === undefined ? '' : String(after.importance),
+    );
+
+    const fieldKeys = new Set([
+        ...Object.keys(before?.fields || {}),
+        ...Object.keys(after?.fields || {}),
+    ]);
+
+    for (const field of fieldKeys) {
+        pushChangeDetail(
+            details,
+            'field',
+            field,
+            normalizeChangeValue(before?.fields?.[field]),
+            normalizeChangeValue(after?.fields?.[field]),
+        );
+    }
+
+    return details;
+}
+
 /**
  * Create an empty entity with default fields for a given category.
  */

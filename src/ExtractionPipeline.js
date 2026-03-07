@@ -1,5 +1,5 @@
 import { ExtractionPrompts, TAVERNDB_TABLE_PROMPT_FEW_SHOT } from './ExtractionPrompts.js';
-import { generateId, unwrapField, wrapField, updateFieldProvenance } from './Utils.js';
+import { deepClone, diffEntitySnapshots, generateId, unwrapField, wrapField, updateFieldProvenance } from './Utils.js';
 
 const CATEGORIES = ['characters', 'locations', 'mainCharacter', 'goals', 'events'];
 
@@ -100,7 +100,7 @@ export class ExtractionPipeline {
                         console.debug(`[RP Memory] ${category}: ${entities.length} entities extracted`, entities);
                     }
                     try {
-                        this._mergeResult(category, { entities });
+                        this._mergeResult(category, { entities }, 'extraction');
                         mergeCount++;
                     } catch (mergeError) {
                         console.warn(`[RP Memory] Merge failed for ${category}:`, mergeError);
@@ -185,7 +185,7 @@ export class ExtractionPipeline {
                         console.debug(`[RP Memory] ${category}: ${entities.length} entities extracted`, entities);
                     }
                     try {
-                        this._mergeResult(category, { entities });
+                        this._mergeResult(category, { entities }, 'extraction');
                     } catch (mergeError) {
                         console.warn(`[RP Memory] Merge failed for ${category}:`, mergeError);
                     }
@@ -259,7 +259,7 @@ export class ExtractionPipeline {
                                 console.debug(`[RP Memory] Chunk ${ci + 1}/${chunks.length} — ${category}: ${entities.length} entities`, entities);
                             }
                             try {
-                                this._mergeResult(category, { entities });
+                                this._mergeResult(category, { entities }, 'extraction');
                             } catch (mergeError) {
                                 console.warn(`[RP Memory] Merge failed for ${category} in chunk ${ci + 1}:`, mergeError);
                             }
@@ -702,7 +702,7 @@ export class ExtractionPipeline {
     /**
      * Merge extraction result into memory store.
      */
-    _mergeResult(category, extractedData) {
+    _mergeResult(category, extractedData, source = 'extraction') {
         if (!extractedData?.entities) return;
 
         const currentTurn = this.memoryStore.getTurnCounter();
@@ -760,7 +760,7 @@ export class ExtractionPipeline {
 
             // For mainCharacter, always merge into the single MC entry
             if (category === 'mainCharacter') {
-                this._mergeMainCharacter(entity, currentTurn);
+                this._mergeMainCharacter(entity, currentTurn, source);
                 continue;
             }
 
@@ -799,6 +799,7 @@ export class ExtractionPipeline {
             }
 
             if (existing) {
+                const beforeSnapshot = deepClone(existing);
                 // Update existing entity
                 const newConflicts = this._detectConflicts(existing, entity, currentTurn);
                 const mergedFields = this._mergeFields(existing.fields, entity.fields, currentTurn);
@@ -827,10 +828,12 @@ export class ExtractionPipeline {
                         tier: this._assignTier(newImportance),
                     });
                 }
+
+                this._recordEntityChange(beforeSnapshot, this.memoryStore.getEntity(category, existing.id), category, source);
             } else {
                 // New entity
                 const tier = this._assignTier(entity.importance || 5);
-                this.memoryStore.addEntity(category, {
+                const createdEntity = {
                     id: entityId,
                     name: entity.name || entityId,
                     aliases: [],
@@ -842,8 +845,10 @@ export class ExtractionPipeline {
                     fields: entity.fields || {},
                     conflicts: [],
                     source: 'extracted',
-                });
+                };
+                this.memoryStore.addEntity(category, createdEntity);
                 this._invalidateEntityEmbedding(category, entityId);
+                this._recordEntityChange(null, createdEntity, category, source, 'created');
             }
         }
     }
@@ -851,10 +856,11 @@ export class ExtractionPipeline {
     /**
      * Merge extracted main character data into the existing MC entry.
      */
-    _mergeMainCharacter(entity, currentTurn) {
+    _mergeMainCharacter(entity, currentTurn, source = 'extraction') {
         const existing = this.memoryStore.getMainCharacter();
 
         if (existing) {
+            const beforeSnapshot = deepClone(existing);
             const newConflicts = this._detectConflicts(existing, entity, currentTurn);
             const mergedFields = this._mergeFields(existing.fields, entity.fields, currentTurn);
             const mergedConflicts = this._mergeConflicts(existing.conflicts || [], newConflicts);
@@ -866,8 +872,9 @@ export class ExtractionPipeline {
                 conflicts: mergedConflicts,
             });
             this._invalidateEntityEmbedding('mainCharacter', existing.id);
+            this._recordEntityChange(beforeSnapshot, this.memoryStore.getMainCharacter(), 'mainCharacter', source);
         } else {
-            this.memoryStore.addEntity('mainCharacter', {
+            const createdEntity = {
                 id: 'main-character',
                 name: entity.name || 'Main Character',
                 aliases: [],
@@ -879,9 +886,35 @@ export class ExtractionPipeline {
                 fields: entity.fields || {},
                 conflicts: [],
                 source: 'extracted',
-            });
+            };
+            this.memoryStore.addEntity('mainCharacter', createdEntity);
             this._invalidateEntityEmbedding('mainCharacter', 'main-character');
+            this._recordEntityChange(null, createdEntity, 'mainCharacter', source, 'created');
         }
+    }
+
+    _recordEntityChange(before, after, category, source, action = 'updated') {
+        const subject = after || before;
+        if (!subject) return;
+
+        let details = diffEntitySnapshots(before, after);
+        if (source === 'extraction' || source === 'ooc') {
+            details = details.filter(detail =>
+                detail.kind === 'field' || detail.field === 'name' || detail.field === 'aliases',
+            );
+        }
+
+        if (action === 'updated' && details.length === 0) return;
+
+        this.memoryStore.recordChange({
+            turn: this.memoryStore.getTurnCounter(),
+            source,
+            action,
+            category,
+            entityId: subject.id,
+            entityName: subject.name,
+            details,
+        });
     }
 
     /**
@@ -1166,7 +1199,7 @@ export class ExtractionPipeline {
                         console.debug(`[RP Memory] OOC ${category}: ${entities.length} entities`, entities);
                     }
                     try {
-                        this._mergeResult(category, { entities });
+                        this._mergeResult(category, { entities }, 'ooc');
                         mergeCount++;
                     } catch (mergeError) {
                         console.warn(`[RP Memory] OOC merge failed for ${category}:`, mergeError);

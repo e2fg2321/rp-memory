@@ -29,6 +29,10 @@
                     <i class="fa-solid fa-triangle-exclamation"></i> <span data-i18n="Conflicts">Conflicts</span>
                     <span id="rp_memory_conflict_count" class="rp-mem-badge" style="display:none;">0</span>
                 </div>
+                <div class="menu_button rp-mem-tab" data-tab="changes">
+                    <i class="fa-solid fa-clock-rotate-left"></i> <span data-i18n="Recent Changes">Recent Changes</span>
+                    <span id="rp_memory_change_count" class="rp-mem-badge" style="display:none;">0</span>
+                </div>
             </div>
 
             <!-- ============ TAB: Memory ============ -->
@@ -120,6 +124,14 @@
                     </div>
                     <span id="rp_memory_token_count" class="rp-mem-token-count"></span>
                 </div>
+            </div>
+
+            <!-- ============ TAB: Recent Changes ============ -->
+            <div id="rp_memory_tab_changes" class="rp-mem-tab-content" style="display:none;">
+                <div class="rp-mem-tab-hint" data-i18n="Shows the latest memory updates from extraction, manual edits, and author corrections.">
+                    Shows the latest memory updates from extraction, manual edits, and author corrections.
+                </div>
+                <div id="rp_memory_change_list" class="rp-mem-change-stack"></div>
             </div>
 
             <!-- ============ TAB: Settings ============ -->

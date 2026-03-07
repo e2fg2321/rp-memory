@@ -14,7 +14,7 @@ import { EmbeddingService } from './src/EmbeddingService.js';
 import { LanguageDetector } from './src/LanguageDetector.js';
 import { ReflectionEngine } from './src/ReflectionEngine.js';
 import { GoalsManager } from './src/GoalsManager.js';
-import { createEmptyEntity, generateId, unwrapField, wrapField } from './src/Utils.js';
+import { createEmptyEntity, diffEntitySnapshots, unwrapField, wrapField } from './src/Utils.js';
 
 const MODULE_NAME = 'rp_memory';
 const EXTENSION_KEY = 'rp_memory';
@@ -684,6 +684,37 @@ function getPromptLanguage() {
     return LanguageDetector.resolve(s.language, recentTexts);
 }
 
+function clearDerivedAnalysis() {
+    goalsManager?.clearAnalysis?.();
+}
+
+function recordMemoryChange(change) {
+    if (!memoryStore) return;
+    memoryStore.recordChange({
+        turn: memoryStore.getTurnCounter(),
+        source: 'manual',
+        ...change,
+    });
+}
+
+function recordEntityChangeFromSnapshots(category, beforeEntity, afterEntity, source = 'manual', action = 'updated') {
+    const subject = afterEntity || beforeEntity;
+    if (!subject || !memoryStore) return;
+
+    const details = diffEntitySnapshots(beforeEntity, afterEntity);
+    if (action === 'updated' && details.length === 0) return;
+
+    memoryStore.recordChange({
+        turn: memoryStore.getTurnCounter(),
+        source,
+        action,
+        category,
+        entityId: subject.id,
+        entityName: subject.name,
+        details,
+    });
+}
+
 // ===================== Render UI =====================
 
 function renderMemoryUI() {
@@ -694,6 +725,7 @@ function renderMemoryUI() {
         for (const [cat, count] of Object.entries(counts)) {
             $(`.rp-mem-category-count[data-category="${cat}"]`).text(count);
         }
+        updateRecentChangeCount(counts.changes || 0);
         return;
     }
 
@@ -719,7 +751,9 @@ function renderMemoryUI() {
         $('#rp_memory_conflict_count').hide();
     }
 
+    updateRecentChangeCount(counts.changes || 0);
     renderConflicts();
+    renderRecentChanges();
 
     // Also update floating nav counts + active panel
     updateFloatingNavCounts();
@@ -818,6 +852,140 @@ function renderConflicts() {
     }
 }
 
+function updateRecentChangeCount(count) {
+    if (count > 0) {
+        $('#rp_memory_change_count').text(count).show();
+    } else {
+        $('#rp_memory_change_count').hide();
+    }
+}
+
+function renderRecentChanges(limit = 24) {
+    const container = $('#rp_memory_change_list');
+    if (!container.length) return;
+    container.empty();
+
+    const changes = memoryStore.getRecentChanges(limit);
+    if (changes.length === 0) {
+        container.append(`<div class="rp-mem-empty-state">${escapeHtml(tt`No recent changes`)}</div>`);
+        return;
+    }
+
+    for (const [index, change] of changes.entries()) {
+        container.append(buildRecentChangeCardHtml(change, index === 0));
+    }
+}
+
+function getChangeActionLabel(change) {
+    const labels = {
+        created: tt`Added`,
+        updated: tt`Updated`,
+        deleted: tt`Removed`,
+        pinned: tt`Pinned`,
+        unpinned: tt`Unpinned`,
+        conflict_accepted: tt`Accepted change`,
+        conflict_reverted: tt`Kept previous value`,
+        cleared_all: tt`Cleared memory`,
+    };
+    return labels[change.action] || tt`Updated`;
+}
+
+function getChangeSourceLabel(change) {
+    const labels = {
+        extraction: tt`Extraction`,
+        ooc: tt`Author correction`,
+        manual: tt`Manual edit`,
+        system: tt`System`,
+    };
+    return labels[change.source] || tt`System`;
+}
+
+function getChangeTargetLabel(change) {
+    if (change.action === 'cleared_all') {
+        return tt`All memory`;
+    }
+
+    const categoryLabel = change.category ? getCategoryLabel(change.category) : '';
+    if (change.entityName && categoryLabel) {
+        return `${change.entityName} • ${categoryLabel}`;
+    }
+    return change.entityName || categoryLabel || tt`Memory`;
+}
+
+function getChangeFieldLabel(field) {
+    const metaLabels = {
+        name: tt`Name`,
+        aliases: tt`Aliases`,
+        tier: tt`Tier`,
+        importance: tt`Importance`,
+    };
+    if (metaLabels[field]) return metaLabels[field];
+
+    const rawLabel = field.charAt(0).toUpperCase() + field.slice(1).replace(/([A-Z])/g, ' $1');
+    return tl(rawLabel);
+}
+
+function buildChangeDetailRows(details, limit = 4) {
+    const rows = [];
+    const visible = details.slice(0, limit);
+
+    for (const detail of visible) {
+        const label = getChangeFieldLabel(detail.field);
+        const before = detail.oldValue || '';
+        const after = detail.newValue || '';
+
+        rows.push(`
+            <div class="rp-mem-change-detail">
+                <div class="rp-mem-change-detail-label">${escapeHtml(label)}</div>
+                <div class="rp-mem-change-detail-values">
+                    ${before ? `<div class="rp-mem-change-detail-before" title="${escapeHtml(before)}">${escapeHtml(before)}</div>` : ''}
+                    ${after ? `<div class="rp-mem-change-detail-after" title="${escapeHtml(after)}">${escapeHtml(after)}</div>` : ''}
+                </div>
+            </div>
+        `);
+    }
+
+    if (details.length > limit) {
+        rows.push(`<div class="rp-mem-change-more">${escapeHtml(tt`${details.length - limit} more changes`)}</div>`);
+    }
+
+    return rows.join('');
+}
+
+function buildRecentChangeCardHtml(change, expanded = false) {
+    const actionLabel = getChangeActionLabel(change);
+    const sourceLabel = getChangeSourceLabel(change);
+    const targetLabel = getChangeTargetLabel(change);
+    const details = Array.isArray(change.details) ? change.details : [];
+    const detailRows = buildChangeDetailRows(details);
+    const noteMap = {
+        cleared_all: tt`All stored memory entries were removed for this chat.`,
+        deleted: tt`This entry was removed from memory.`,
+        pinned: tt`This entry was pinned for stronger injection priority.`,
+        unpinned: tt`This entry returned to normal priority.`,
+        conflict_accepted: tt`The newer extracted value was kept.`,
+        conflict_reverted: tt`The previous value was restored.`,
+    };
+    const note = !detailRows ? (noteMap[change.action] || tt`No field-level details recorded.`) : '';
+
+    return `
+    <details class="rp-mem-change-card"${expanded ? ' open' : ''}>
+        <summary class="rp-mem-change-summary">
+            <div class="rp-mem-change-summary-main">
+                <div class="rp-mem-change-title">${escapeHtml(actionLabel)}</div>
+                <div class="rp-mem-change-target">${escapeHtml(targetLabel)}</div>
+            </div>
+            <div class="rp-mem-change-summary-meta">
+                <span class="rp-mem-change-source rp-mem-change-source-${escapeHtml(change.source || 'system')}">${escapeHtml(sourceLabel)}</span>
+                <span class="rp-mem-change-turn">${escapeHtml(tt`Turn`)} ${change.turn ?? 0}</span>
+            </div>
+        </summary>
+        <div class="rp-mem-change-body">
+            ${detailRows || `<div class="rp-mem-change-note">${escapeHtml(note)}</div>`}
+        </div>
+    </details>`;
+}
+
 function renderConflictCard(category, entity, conflict) {
     return `
     <div class="rp-mem-conflict-card" data-category="${category}" data-id="${entity.id}" data-field="${escapeHtml(conflict.field)}">
@@ -867,6 +1035,19 @@ function resolveConflict(category, entityId, field, acceptNew) {
     }
 
     conflict.resolved = true;
+    clearDerivedAnalysis();
+    recordMemoryChange({
+        action: acceptNew ? 'conflict_accepted' : 'conflict_reverted',
+        category,
+        entityId,
+        entityName: entity.name,
+        details: [{
+            kind: 'field',
+            field,
+            oldValue: conflict.oldValue ?? '',
+            newValue: acceptNew ? (conflict.newValue ?? '') : (conflict.oldValue ?? ''),
+        }],
+    });
     saveMemoryState();
     injectMemoryPrompt();
     renderMemoryUI();
@@ -905,13 +1086,19 @@ async function openAddEntityDialog(category) {
         const turn = memoryStore.getTurnCounter();
         const entity = createEmptyEntity(category, name.trim(), turn);
         memoryStore.addEntity(category, entity);
+        clearDerivedAnalysis();
+        recordEntityChangeFromSnapshots(category, null, entity, 'manual', 'created');
         saveMemoryState();
         injectMemoryPrompt();
         renderMemoryUI();
         debugLog('Entity added:', category, entity.id);
 
-        // Enter inline edit mode on the new card
-        enterEditMode(category, entity.id);
+        const panelOpenForCategory = activePanelCategory === category && $('.rp-mem-data-panel').not('.hidden').length;
+        if (panelOpenForCategory) {
+            openCardEditOverlay(category, entity.id);
+        } else {
+            enterEditMode(category, entity.id);
+        }
     } catch (err) {
         console.error('[RP Memory] Error adding entity:', err);
     }
@@ -1014,7 +1201,10 @@ function enterEditMode(category, entityId) {
     }
 
     // Find the card (could be in sidebar or panel)
-    const $card = $(`.rp-mem-entity[data-category="${category}"][data-id="${entityId}"]`).first();
+    const $cards = $(`.rp-mem-entity[data-category="${category}"][data-id="${entityId}"]`);
+    const $card = $cards.filter(':visible').first().length
+        ? $cards.filter(':visible').first()
+        : $cards.first();
     if (!$card.length) {
         debugLog('Edit: card element not found');
         return;
@@ -1117,6 +1307,7 @@ function exitEditMode(save) {
     if (save) {
         const entity = memoryStore.getEntity(category, entityId);
         if (entity) {
+            const beforeSnapshot = JSON.parse(JSON.stringify(entity));
             const updatedName = $card.find('.rp-mem-edit-name-input').val()?.trim() || entity.name;
             const updatedTier = parseInt($card.find('.rp-mem-edit-tier-select').val()) || entity.tier;
             const updatedImportance = parseFloat($card.find('.rp-mem-edit-importance-input').val()) || entity.importance;
@@ -1130,38 +1321,23 @@ function exitEditMode(save) {
                 updatedAliases = aliasStr.split(',').map(a => a.trim()).filter(Boolean);
             }
 
-            // Handle name change (requires ID change)
-            if (updatedName !== entity.name && category !== 'mainCharacter') {
-                const newId = generateId(updatedName);
-                memoryStore.deleteEntity(category, entity.id);
-                memoryStore.addEntity(category, {
-                    ...entity,
-                    id: newId,
-                    name: updatedName,
-                    aliases: updatedAliases,
-                    tier: updatedTier,
-                    importance: updatedImportance,
-                    baseScore: updatedImportance,
-                    fields: updatedFields,
-                    source: 'manual',
-                });
-            } else {
-                memoryStore.updateEntity(category, entityId, {
-                    name: updatedName,
-                    aliases: updatedAliases,
-                    tier: updatedTier,
-                    importance: updatedImportance,
-                    baseScore: updatedImportance,
-                    fields: updatedFields,
-                    source: 'manual',
-                });
-            }
+            memoryStore.updateEntity(category, entityId, {
+                name: updatedName,
+                aliases: updatedAliases,
+                tier: updatedTier,
+                importance: updatedImportance,
+                baseScore: updatedImportance,
+                fields: updatedFields,
+                source: 'manual',
+            });
 
             // Invalidate embedding cache for this entity
             if (embeddingService) {
                 embeddingService.invalidateEntity(category, entityId);
             }
 
+            clearDerivedAnalysis();
+            recordEntityChangeFromSnapshots(category, beforeSnapshot, memoryStore.getEntity(category, entityId), 'manual', 'updated');
             saveMemoryState();
             injectMemoryPrompt();
             debugLog('Entity updated via inline edit:', category, entityId);
@@ -1211,8 +1387,17 @@ function togglePin(category, entityId) {
     const entity = memoryStore.getEntity(category, entityId);
     if (!entity) return;
 
+    const beforeSnapshot = JSON.parse(JSON.stringify(entity));
     const newTier = entity.tier === 1 ? 2 : 1;
     memoryStore.updateEntity(category, entityId, { tier: newTier });
+    clearDerivedAnalysis();
+    recordEntityChangeFromSnapshots(
+        category,
+        beforeSnapshot,
+        memoryStore.getEntity(category, entityId),
+        'manual',
+        newTier === 1 ? 'pinned' : 'unpinned',
+    );
     saveMemoryState();
     injectMemoryPrompt();
     renderMemoryUI();
@@ -1228,7 +1413,10 @@ async function deleteEntity(category, entityId) {
     );
 
     if (result === POPUP_RESULT.AFFIRMATIVE) {
+        const beforeSnapshot = JSON.parse(JSON.stringify(entity));
         memoryStore.deleteEntity(category, entityId);
+        clearDerivedAnalysis();
+        recordEntityChangeFromSnapshots(category, beforeSnapshot, null, 'manual', 'deleted');
         saveMemoryState();
         injectMemoryPrompt();
         renderMemoryUI();
@@ -1242,7 +1430,15 @@ async function clearAllMemory() {
     );
 
     if (result === POPUP_RESULT.AFFIRMATIVE) {
+        const clearedTurn = memoryStore.getTurnCounter();
         memoryStore.clear();
+        clearDerivedAnalysis();
+        recordMemoryChange({
+            turn: clearedTurn,
+            action: 'cleared_all',
+            source: 'manual',
+            meta: { clearedAtTurn: clearedTurn },
+        });
         saveMemoryState();
         injectMemoryPrompt();
         renderMemoryUI();
@@ -1356,6 +1552,7 @@ async function triggerExtraction(context) {
         const { chatId, characterId } = context;
 
         await pipeline.extract(context);
+        clearDerivedAnalysis();
 
         // Verify context hasn't changed during extraction
         const newContext = getContext();
@@ -1507,6 +1704,7 @@ async function forceExtract() {
                 });
             }
         }
+        clearDerivedAnalysis();
 
         // Verify context hasn't changed during extraction
         const newContext = getContext();
@@ -2008,6 +2206,7 @@ const CATEGORY_DEFS = [
     { key: 'locations', icon: 'fa-map-location-dot', labelKey: 'Loc' },
     { key: 'goals', icon: 'fa-bullseye', labelKey: 'Goals' },
     { key: 'events', icon: 'fa-timeline', labelKey: 'Events' },
+    { key: 'changes', icon: 'fa-clock-rotate-left', labelKey: 'Changes' },
     { key: 'beats', icon: 'fa-bolt', labelKey: 'Beats' },
     { key: 'reflections', icon: 'fa-lightbulb', labelKey: 'Reflect' },
 ];
@@ -2019,6 +2218,7 @@ function getCategoryLabel(key) {
         locations: tt`Locations`,
         goals: tt`Goals / Tasks`,
         events: tt`Events`,
+        changes: tt`Recent Changes`,
         beats: tt`Story Beats`,
         reflections: tt`Reflections`,
     };
@@ -2211,6 +2411,20 @@ function renderPanelCards(category) {
 
     const title = getCategoryLabel(category);
     $panel.append(`<div class="rp-mem-data-panel-title">${escapeHtml(title)}</div>`);
+
+    if (category === 'changes') {
+        const changes = memoryStore.getRecentChanges(40);
+        if (changes.length === 0) {
+            $panel.append(`<div class="rp-mem-empty-state">${escapeHtml(tt`No recent changes`)}</div>`);
+        } else {
+            const $stack = $('<div class="rp-mem-change-stack"></div>');
+            for (const [index, change] of changes.entries()) {
+                $stack.append(buildRecentChangeCardHtml(change, index === 0));
+            }
+            $panel.append($stack);
+        }
+        return;
+    }
 
     // Special handling for beats (read-only timeline)
     if (category === 'beats') {
@@ -2499,7 +2713,10 @@ function bindEditOverlayListeners() {
         );
 
         if (result === POPUP_RESULT.AFFIRMATIVE) {
+            const beforeSnapshot = JSON.parse(JSON.stringify(entity));
             memoryStore.deleteEntity(category, entityId);
+            clearDerivedAnalysis();
+            recordEntityChangeFromSnapshots(category, beforeSnapshot, null, 'manual', 'deleted');
             saveMemoryState();
             injectMemoryPrompt();
             renderMemoryUI();
@@ -2533,6 +2750,7 @@ function saveOverlayEdits() {
     const updatedTier = parseInt($dialog.find('.rp-mem-overlay-tier').val()) || entity.tier;
     const updatedImportance = parseFloat($dialog.find('.rp-mem-overlay-importance').val()) || entity.importance;
     const updatedFields = readOverlayFields($dialog, category, entity.fields);
+    const beforeSnapshot = JSON.parse(JSON.stringify(entity));
 
     // Read aliases from meta field
     const $aliasInput = $dialog.find('[data-edit-field="_aliases"]');
@@ -2542,38 +2760,23 @@ function saveOverlayEdits() {
         updatedAliases = aliasStr.split(',').map(a => a.trim()).filter(Boolean);
     }
 
-    // Handle name change (requires ID change)
-    if (updatedName !== entity.name && category !== 'mainCharacter') {
-        const newId = generateId(updatedName);
-        memoryStore.deleteEntity(category, entity.id);
-        memoryStore.addEntity(category, {
-            ...entity,
-            id: newId,
-            name: updatedName,
-            aliases: updatedAliases,
-            tier: updatedTier,
-            importance: updatedImportance,
-            baseScore: updatedImportance,
-            fields: updatedFields,
-            source: 'manual',
-        });
-    } else {
-        memoryStore.updateEntity(category, entityId, {
-            name: updatedName,
-            aliases: updatedAliases,
-            tier: updatedTier,
-            importance: updatedImportance,
-            baseScore: updatedImportance,
-            fields: updatedFields,
-            source: 'manual',
-        });
-    }
+    memoryStore.updateEntity(category, entityId, {
+        name: updatedName,
+        aliases: updatedAliases,
+        tier: updatedTier,
+        importance: updatedImportance,
+        baseScore: updatedImportance,
+        fields: updatedFields,
+        source: 'manual',
+    });
 
     // Invalidate embedding cache
     if (embeddingService) {
         embeddingService.invalidateEntity(category, entityId);
     }
 
+    clearDerivedAnalysis();
+    recordEntityChangeFromSnapshots(category, beforeSnapshot, memoryStore.getEntity(category, entityId), 'manual', 'updated');
     saveMemoryState();
     injectMemoryPrompt();
     renderMemoryUI();
@@ -2835,6 +3038,7 @@ async function handleOOCSubmit(text) {
     if (apiKey && context.chat?.length) {
         pipeline.applyOOCDirective(text, context).then(updated => {
             if (updated) {
+                clearDerivedAnalysis();
                 saveMemoryState();
                 injectMemoryPrompt();
                 renderMemoryUI();
