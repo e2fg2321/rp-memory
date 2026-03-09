@@ -1,5 +1,5 @@
 import { eventSource, event_types, extension_prompt_types, extension_prompt_roles,
-    saveSettingsDebounced, setExtensionPrompt } from '../../../../script.js';
+    getMaxContextSize, saveSettingsDebounced, setExtensionPrompt } from '../../../../script.js';
 import { extension_settings, getContext, renderExtensionTemplateAsync,
     saveMetadataDebounced } from '../../../extensions.js';
 import { Popup, POPUP_RESULT } from '../../../popup.js';
@@ -14,7 +14,8 @@ import { EmbeddingService } from './src/EmbeddingService.js';
 import { LanguageDetector } from './src/LanguageDetector.js';
 import { ReflectionEngine } from './src/ReflectionEngine.js';
 import { GoalsManager } from './src/GoalsManager.js';
-import { createEmptyEntity, diffEntitySnapshots, unwrapField, wrapField } from './src/Utils.js';
+import { RawTurnRanker } from './src/RawTurnRanker.js';
+import { createEmptyEntity, diffEntitySnapshots, estimateTokens, unwrapField, wrapField } from './src/Utils.js';
 
 const MODULE_NAME = 'rp_memory';
 const EXTENSION_KEY = 'rp_memory';
@@ -38,6 +39,9 @@ const defaultSettings = {
     debugMode: true,
     embeddingsEnabled: false,
     embeddingModel: 'openai/text-embedding-3-small',
+    episodicMemoryMode: 'beats',
+    rawTurnCompactionEnabled: true,
+    chatHistoryReserveTokens: 0,
     language: 'auto',
     reflectionEnabled: true,
     reflectionThreshold: 30,
@@ -58,6 +62,7 @@ let apiClient = null;
 let pipeline = null;
 let decayEngine = null;
 let embeddingService = null;
+let rawTurnRanker = null;
 let reflectionEngine = null;
 let goalsManager = null;
 let lastProcessedLength = 0;
@@ -151,6 +156,63 @@ function getSettings() {
     return extension_settings[EXTENSION_KEY];
 }
 
+function isRawTurnRetrievalMode() {
+    return getSettings().episodicMemoryMode === 'raw_turns_experimental';
+}
+
+function getEffectiveMemoryBudget() {
+    const s = getSettings();
+    const configuredBudget = Number(s.tokenBudget) > 0 ? Number(s.tokenBudget) : Infinity;
+    const chatReserve = Math.max(0, parseInt(s.chatHistoryReserveTokens, 10) || 0);
+    let effectiveBudget = configuredBudget;
+    let isCapped = Number.isFinite(configuredBudget);
+    let reserveApplied = false;
+    let stPromptBudget = null;
+
+    if (chatReserve > 0) {
+        try {
+            const stBudget = Number(getMaxContextSize?.());
+            if (Number.isFinite(stBudget) && stBudget > 0) {
+                stPromptBudget = Math.floor(stBudget);
+                const reserveLimitedBudget = Math.max(0, Math.floor(stBudget - chatReserve));
+                effectiveBudget = Math.min(effectiveBudget, reserveLimitedBudget);
+                isCapped = true;
+                reserveApplied = true;
+            }
+        } catch (err) {
+            console.debug('[RP Memory] Failed to read ST prompt budget for chat reserve:', err?.message || err);
+        }
+    }
+
+    return {
+        totalBudget: isCapped ? Math.max(0, Math.floor(effectiveBudget)) : Infinity,
+        isCapped,
+        configuredBudget: Number.isFinite(configuredBudget) ? Math.floor(configuredBudget) : 0,
+        chatReserve,
+        reserveApplied,
+        stPromptBudget,
+    };
+}
+
+function getEffectiveEpisodicBudget(totalBudget) {
+    if (!Number.isFinite(totalBudget)) return Infinity;
+    if (totalBudget <= 0) return 0;
+
+    const s = getSettings();
+    const beatBudgetPercent = s.beatBudgetPercent || 25;
+    const reflectionBudgetPercent = s.reflectionBudgetPercent || 15;
+    const totalPercent = beatBudgetPercent + reflectionBudgetPercent;
+    const combinedPercent = Math.min(totalPercent, 60);
+    const adjustedReflectionPercent = totalPercent > 60
+        ? Math.floor(reflectionBudgetPercent * 60 / totalPercent)
+        : reflectionBudgetPercent;
+    const adjustedBeatPercent = totalPercent > 60
+        ? 60 - adjustedReflectionPercent
+        : combinedPercent - adjustedReflectionPercent;
+
+    return Math.max(0, Math.floor(totalBudget * adjustedBeatPercent / 100));
+}
+
 /**
  * Resolve the API key. If useSTKey is enabled, tries to use SillyTavern's
  * OpenRouter key (cached for the session). Otherwise uses the extension's own key.
@@ -235,6 +297,10 @@ function syncUIFromSettings() {
     $('#rp_memory_embeddings_enabled').prop('checked', s.embeddingsEnabled);
     $('#rp_memory_embedding_model_container').toggle(s.embeddingsEnabled);
     $('#rp_memory_embedding_model').val(s.embeddingModel);
+    $('#rp_memory_episodic_mode').val(s.episodicMemoryMode);
+    $('#rp_memory_chat_history_reserve_tokens').val(s.chatHistoryReserveTokens);
+    $('#rp_memory_raw_turn_compaction_enabled').prop('checked', s.rawTurnCompactionEnabled);
+    $('#rp_memory_raw_turn_compaction_container').toggle(s.episodicMemoryMode === 'raw_turns_experimental');
     $('#rp_memory_goals_intent_enabled').prop('checked', s.goalsIntentEnabled);
     $('#rp_memory_goals_intent_model_container').toggle(s.goalsIntentEnabled);
     $('#rp_memory_goals_intent_async').prop('checked', s.goalsIntentAsync);
@@ -281,6 +347,9 @@ function bindSettingsListeners() {
             getSettings()[config.key] = val;
             $(`#${config.display}`).text(val);
             saveSettingsDebounced();
+            if (config.key === 'tokenBudget') {
+                injectMemoryPrompt();
+            }
         });
     }
 
@@ -325,6 +394,25 @@ function bindSettingsListeners() {
             embeddingService.clearCache();
         }
         saveSettingsDebounced();
+    });
+
+    $('#rp_memory_episodic_mode').on('change', function () {
+        getSettings().episodicMemoryMode = $(this).val() || 'beats';
+        $('#rp_memory_raw_turn_compaction_container').toggle(getSettings().episodicMemoryMode === 'raw_turns_experimental');
+        saveSettingsDebounced();
+        injectMemoryPrompt();
+    });
+
+    $('#rp_memory_chat_history_reserve_tokens').on('input', function () {
+        getSettings().chatHistoryReserveTokens = Math.max(0, parseInt($(this).val(), 10) || 0);
+        saveSettingsDebounced();
+        injectMemoryPrompt();
+    });
+
+    $('#rp_memory_raw_turn_compaction_enabled').on('change', function () {
+        getSettings().rawTurnCompactionEnabled = $(this).prop('checked');
+        saveSettingsDebounced();
+        injectMemoryPrompt();
     });
 
     // Refresh embedding models button
@@ -542,12 +630,18 @@ async function injectMemoryPrompt() {
         return;
     }
 
-    let promptText;
+    const budgetInfo = getEffectiveMemoryBudget();
+    const effectiveMemoryBudget = budgetInfo.totalBudget;
+    const effectiveEpisodicBudget = getEffectiveEpisodicBudget(effectiveMemoryBudget);
+    const tokenBudgetOverride = budgetInfo.isCapped ? effectiveMemoryBudget : undefined;
+    let promptText = '';
     const apiKey = await resolveApiKey();
     const currentTurn = memoryStore.getTurnCounter();
     const narrativeDirection = goalsManager ? goalsManager.getNarrativeDirection(currentTurn) : null;
 
-    if (s.embeddingsEnabled && apiKey && embeddingService) {
+    if (budgetInfo.isCapped && effectiveMemoryBudget <= 0) {
+        promptText = '';
+    } else if (s.embeddingsEnabled && apiKey && embeddingService) {
         try {
             const context = getContext();
             const recentMessages = getRecentMessageTexts(context, s.messagesPerExtraction * 2);
@@ -564,12 +658,28 @@ async function injectMemoryPrompt() {
                     }
                 }
 
-                // Rank beats
+                const rankedForTurnRetrieval = ranked.filter(item => item.entity.tier !== 3);
+                // Exclude generic goal entities from the base injector list — GoalsManager replaces them below.
+                const injectionRanked = rankedForTurnRetrieval.filter(item => item.category !== 'goals');
+
+                // Rank beats or raw turns
                 let rankedBeats = null;
-                try {
-                    rankedBeats = await embeddingService.rankBeats(memoryStore, recentMessages, currentTurn);
-                } catch (beatErr) {
-                    debugLog('Beat ranking failed:', beatErr.message);
+                let rankedRawTurns = null;
+                if (isRawTurnRetrievalMode() && rawTurnRanker) {
+                    const rawTurnResult = await rawTurnRanker.rank(memoryStore, recentMessages, rankedForTurnRetrieval, currentTurn, {
+                        rawTurnBudget: effectiveEpisodicBudget,
+                        compactionEnabled: s.rawTurnCompactionEnabled,
+                    });
+                    rankedRawTurns = rawTurnResult.ranked;
+                    if (s.debugMode) {
+                        debugLog('Raw-turn ranking stats:', rawTurnResult.stats);
+                    }
+                } else {
+                    try {
+                        rankedBeats = await embeddingService.rankBeats(memoryStore, recentMessages, currentTurn);
+                    } catch (beatErr) {
+                        debugLog('Beat ranking failed:', beatErr.message);
+                    }
                 }
 
                 // Rank reflections by relevance (not just recency)
@@ -582,31 +692,84 @@ async function injectMemoryPrompt() {
                     rankedReflections = memoryStore.getRecentReflections(5);
                 }
 
-                // Exclude tier-3 (archived) entities from injection — they stay in UI but are noise in the prompt
-                // Replace generic goal entries with GoalsManager-ranked goals
-                const injectionRanked = ranked.filter(item => item.entity.tier !== 3 && item.category !== 'goals');
                 const rankedGoals = goalsManager.getRankedGoals(currentTurn);
                 const goalBeats = goalsManager.getGoalBeats(rankedGoals.map(g => g.entity.id));
-                promptText = injector.format(memoryStore, { relevantEntities: injectionRanked, sceneType, currentTurn, rankedBeats, reflections: rankedReflections, rankedGoals, goalBeats, narrativeDirection });
-                debugLog('Embedding-based injection:', injectionRanked.length, '/', ranked.length, 'entities (excluded', ranked.length - injectionRanked.length, 'tier-3), scene:', sceneType, ', goals:', rankedGoals.length);
+                promptText = injector.format(memoryStore, {
+                    relevantEntities: injectionRanked,
+                    sceneType,
+                    currentTurn,
+                    rankedBeats,
+                    rankedRawTurns,
+                    reflections: rankedReflections,
+                    rankedGoals,
+                    goalBeats,
+                    narrativeDirection,
+                    tokenBudgetOverride,
+                });
+                debugLog(
+                    'Embedding-based injection:',
+                    injectionRanked.length,
+                    '/',
+                    ranked.length,
+                    'entities (excluded',
+                    ranked.length - injectionRanked.length,
+                    'tier-3), scene:',
+                    sceneType,
+                    ', goals:',
+                    rankedGoals.length,
+                    isRawTurnRetrievalMode() ? `, raw turns: ${rankedRawTurns?.length || 0}` : '',
+                );
             } else {
                 const reflections = memoryStore.getRecentReflections(5);
                 const rankedGoals = goalsManager.getRankedGoals(currentTurn);
                 const goalBeats = goalsManager.getGoalBeats(rankedGoals.map(g => g.entity.id));
-                promptText = injector.format(memoryStore, { currentTurn, reflections, rankedGoals, goalBeats, narrativeDirection });
+                const rankedRawTurns = isRawTurnRetrievalMode()
+                    ? memoryStore.getRecentRawTurns(6).map(turn => ({ turn, score: 0 }))
+                    : null;
+                promptText = injector.format(memoryStore, {
+                    currentTurn,
+                    reflections,
+                    rankedGoals,
+                    goalBeats,
+                    rankedRawTurns,
+                    narrativeDirection,
+                    tokenBudgetOverride,
+                });
             }
         } catch (err) {
             console.warn('[RP Memory] Embedding ranking failed, falling back to full injection:', err.message);
             const reflections = memoryStore.getRecentReflections(5);
             const rankedGoals = goalsManager.getRankedGoals(currentTurn);
             const goalBeats = goalsManager.getGoalBeats(rankedGoals.map(g => g.entity.id));
-            promptText = injector.format(memoryStore, { currentTurn, reflections, rankedGoals, goalBeats, narrativeDirection });
+            const rankedRawTurns = isRawTurnRetrievalMode()
+                ? memoryStore.getRecentRawTurns(6).map(turn => ({ turn, score: 0 }))
+                : null;
+            promptText = injector.format(memoryStore, {
+                currentTurn,
+                reflections,
+                rankedGoals,
+                goalBeats,
+                rankedRawTurns,
+                narrativeDirection,
+                tokenBudgetOverride,
+            });
         }
     } else {
         const reflections = memoryStore.getRecentReflections(5);
         const rankedGoals = goalsManager.getRankedGoals(currentTurn);
         const goalBeats = goalsManager.getGoalBeats(rankedGoals.map(g => g.entity.id));
-        promptText = injector.format(memoryStore, { currentTurn, reflections, rankedGoals, goalBeats, narrativeDirection });
+        const rankedRawTurns = isRawTurnRetrievalMode()
+            ? memoryStore.getRecentRawTurns(6).map(turn => ({ turn, score: 0 }))
+            : null;
+        promptText = injector.format(memoryStore, {
+            currentTurn,
+            reflections,
+            rankedGoals,
+            goalBeats,
+            rankedRawTurns,
+            narrativeDirection,
+            tokenBudgetOverride,
+        });
     }
 
     if (s.debugMode && promptText) {
@@ -623,15 +786,19 @@ async function injectMemoryPrompt() {
     );
 
     // Update token count display
-    const tokens = injector.getTokenCount(memoryStore);
+    const tokens = estimateTokens(promptText || '');
     const totalStored = injector.getTotalStoredTokens(memoryStore);
-    const budget = s.tokenBudget;
     let countText = `~${tokens} injected / ~${totalStored} stored`;
-    if (budget > 0) {
-        countText += ` (budget: ${budget})`;
-        if (tokens > budget) {
+    if (budgetInfo.isCapped) {
+        const budgetLabel = budgetInfo.reserveApplied
+            ? `effective budget: ${effectiveMemoryBudget}`
+            : `budget: ${effectiveMemoryBudget}`;
+        countText += ` (${budgetLabel})`;
+        if (tokens > effectiveMemoryBudget) {
             countText += ' OVER';
         }
+    } else if (budgetInfo.chatReserve > 0) {
+        countText += ` (chat reserve requested: ${budgetInfo.chatReserve})`;
     }
     $('#rp_memory_token_count').text(countText);
 
@@ -1564,8 +1731,10 @@ async function triggerExtraction(context) {
         memoryStore.setLastExtractionTurn(memoryStore.getTurnCounter());
 
         // Enforce beat cap
-        const maxBeats = getSettings().maxBeats || 200;
-        memoryStore.enforceMaxBeats(maxBeats);
+        if (!isRawTurnRetrievalMode()) {
+            const maxBeats = getSettings().maxBeats || 200;
+            memoryStore.enforceMaxBeats(maxBeats);
+        }
 
         // Prune low-importance events and completed/stale goals
         memoryStore.pruneEvents(6, 10);
@@ -1597,7 +1766,7 @@ async function triggerExtraction(context) {
 
         // Post-extraction: compress beats first, then optionally reflect (async, non-blocking)
         // Defer save/inject/render until after reflection completes to avoid double-inject
-        if (reflectionEngine) {
+        if (reflectionEngine && !isRawTurnRetrievalMode()) {
             // Abort any previous reflection still running
             reflectionEngine.abort();
 
@@ -1720,8 +1889,10 @@ async function forceExtract() {
         goalsManager.applyDecay(memoryStore.getTurnCounter());
 
         // Enforce beat cap
-        const maxBeats = s.maxBeats || 200;
-        memoryStore.enforceMaxBeats(maxBeats);
+        if (!isRawTurnRetrievalMode()) {
+            const maxBeats = s.maxBeats || 200;
+            memoryStore.enforceMaxBeats(maxBeats);
+        }
 
         // Prune low-importance events and completed/stale goals
         memoryStore.pruneEvents(6, 10);
@@ -1753,7 +1924,7 @@ async function forceExtract() {
 
         // Post-extraction: compress beats first, then optionally reflect (async, non-blocking)
         // Defer save/inject/render until after reflection completes to avoid double-inject
-        if (reflectionEngine) {
+        if (reflectionEngine && !isRawTurnRetrievalMode()) {
             reflectionEngine.abort();
 
             reflectionEngine.compress().then(() => {
@@ -3124,6 +3295,7 @@ jQuery(async function () {
         apiClient.setKeyResolver(resolveApiKey);
         decayEngine = new DecayEngine(() => getSettings());
         embeddingService = new EmbeddingService(apiClient, () => getSettings(), getPromptLanguage);
+        rawTurnRanker = new RawTurnRanker(apiClient, () => getSettings(), getPromptLanguage);
         pipeline = new ExtractionPipeline(apiClient, memoryStore, () => getSettings(), decayEngine, getPromptLanguage, embeddingService);
         reflectionEngine = new ReflectionEngine(apiClient, memoryStore, () => getSettings(), getPromptLanguage);
         goalsManager = new GoalsManager(memoryStore, embeddingService, apiClient, () => getSettings(), getPromptLanguage);

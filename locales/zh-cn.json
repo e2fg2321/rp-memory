@@ -50,6 +50,8 @@
     "Decay factor:": "衰减系数：<b><span id=\"rp_memory_decay_val\">0.95</span></b>",
     "Demotion threshold:": "降级阈值：<b><span id=\"rp_memory_demote_val\">5.0</span></b>",
     "Token budget (0 = uncapped):": "Token 预算（0 = 无上限）：<b><span id=\"rp_memory_budget_val\">0</span></b>",
+    "Reserve tokens for chat history:": "为聊天历史预留 Token：",
+    "Best-effort cap: RP Memory backs off so SillyTavern can keep at least this many prompt tokens available for chat history.": "尽力限制：RP Memory 会主动收缩注入内容，尽量为 SillyTavern 的聊天历史保留至少这么多提示词 Token 空间。",
 
     "Injection Position": "注入位置",
     "Before Main Prompt": "主提示词之前",
@@ -60,6 +62,12 @@
     "When enabled, only injects entities relevant to the current scene instead of all active entities.": "启用后，仅注入与当前场景相关的实体，而非所有活跃实体。",
     "Embedding Model": "嵌入模型",
     "[title]Refresh embedding model list": "刷新嵌入模型列表",
+    "Episodic Context Mode": "情节上下文模式",
+    "Beats (default)": "节拍（默认）",
+    "Raw turns (experimental)": "原始回合（实验）",
+    "Experimental raw-turn mode skips beat storage, records exchange transcripts linked to entities, and uses an extra LLM ranking pass during injection when Smart Retrieval is enabled.": "实验性的原始回合模式会跳过 beat 存储，记录与实体关联的对话轮原文，并在启用智能检索时于注入前增加一次额外的 LLM 排序调用。",
+    "Compact support raw turns before injection": "注入前压缩低优先级原始回合",
+    "Keeps the top-ranked raw turns verbatim and asks a second LLM call to compress lower-priority support turns for the current scene before injection.": "保留最高优先级的原始回合原文，并额外调用一次 LLM，将较低优先级的支持回合按当前场景压缩后再注入。",
 
     "Language": "语言",
     "Auto-detect": "自动检测",

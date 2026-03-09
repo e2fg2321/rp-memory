@@ -1,4 +1,5 @@
 import { ExtractionPrompts, TAVERNDB_TABLE_PROMPT_FEW_SHOT } from './ExtractionPrompts.js';
+import { RawTurnRanker } from './RawTurnRanker.js';
 import { deepClone, diffEntitySnapshots, generateId, unwrapField, wrapField, updateFieldProvenance } from './Utils.js';
 
 const CATEGORIES = ['characters', 'locations', 'mainCharacter', 'goals', 'events'];
@@ -79,6 +80,8 @@ export class ExtractionPipeline {
 
         const currentState = this._buildExtractionState();
         const scenarioContext = this._buildScenarioContext(context);
+        const estimatedTurns = Math.max(1, Math.ceil(targetMessages.length / 2));
+        const batchStartTurn = Math.max(1, this.memoryStore.getTurnCounter() - estimatedTurns + 1);
 
         this._abortController = new AbortController();
         let result;
@@ -112,10 +115,12 @@ export class ExtractionPipeline {
             this._pendingGoalDedups = null;
 
             // Process beats (Layer 2)
-            if (Array.isArray(result.beats) && result.beats.length > 0) {
+            if (!this._shouldUseRawTurns() && Array.isArray(result.beats) && result.beats.length > 0) {
                 this._processBeats(result.beats);
                 mergeCount++;
             }
+
+            this._recordRawTurns(targetMessages, batchStartTurn);
 
             if (settings.debugMode) {
                 console.debug(`[RP Memory] Extraction complete: ${mergeCount} categories had updates`);
@@ -165,6 +170,8 @@ export class ExtractionPipeline {
             : '';
         const currentState = this._buildExtractionState();
         const scenarioContext = this._buildScenarioContext(context);
+        const estimatedTurns = Math.max(1, Math.ceil(targetMessages.length / 2));
+        const batchStartTurn = Math.max(1, this.memoryStore.getTurnCounter() - estimatedTurns + 1);
 
         this._abortController = new AbortController();
         let result;
@@ -195,9 +202,11 @@ export class ExtractionPipeline {
             this._pendingGoalDedups = null;
 
             // Process beats
-            if (Array.isArray(result.beats) && result.beats.length > 0) {
+            if (!this._shouldUseRawTurns() && Array.isArray(result.beats) && result.beats.length > 0) {
                 this._processBeats(result.beats);
             }
+
+            this._recordRawTurns(targetMessages, batchStartTurn);
         }
     }
 
@@ -245,6 +254,7 @@ export class ExtractionPipeline {
                     ? this._formatMessages(chunks[ci - 1], context.name1, context.name2, settings)
                     : '';
                 const currentState = this._buildExtractionState();
+                const batchStartTurn = Math.max(1, this.memoryStore.getTurnCounter() - exchangesInChunk + 1);
 
                 const result = await this._extractAll(formattedTarget, currentState, context, scenarioContext, formattedContext);
 
@@ -269,9 +279,11 @@ export class ExtractionPipeline {
                     this._pendingGoalDedups = null;
 
                     // Process beats
-                    if (Array.isArray(result.beats) && result.beats.length > 0) {
+                    if (!this._shouldUseRawTurns() && Array.isArray(result.beats) && result.beats.length > 0) {
                         this._processBeats(result.beats);
                     }
+
+                    this._recordRawTurns(chunks[ci], batchStartTurn);
                 }
             }
         } finally {
@@ -432,7 +444,8 @@ export class ExtractionPipeline {
      */
     async _extractAll(formattedMessages, currentState, context, scenarioContext = '', precedingContext = '') {
         const lang = this.getLang();
-        const systemPrompt = lang === 'zh' ? ExtractionPrompts.UNIFIED_SYSTEM_ZH : ExtractionPrompts.UNIFIED_SYSTEM;
+        const includeBeats = !this._shouldUseRawTurns();
+        const systemPrompt = ExtractionPrompts.getUnifiedSystem(lang, includeBeats);
         const userPrompt = ExtractionPrompts.getUnifiedUserPrompt(
             formattedMessages,
             currentState,
@@ -441,6 +454,7 @@ export class ExtractionPipeline {
             lang,
             scenarioContext,
             precedingContext,
+            includeBeats,
         );
 
         const promptMessages = [
@@ -462,6 +476,10 @@ export class ExtractionPipeline {
             console.warn('[RP Memory] Unified extraction call failed:', error);
             return null;
         }
+    }
+
+    _shouldUseRawTurns() {
+        return this.getSettings().episodicMemoryMode === 'raw_turns_experimental';
     }
 
     /**
@@ -630,6 +648,52 @@ export class ExtractionPipeline {
         if (this.getSettings().debugMode) {
             console.debug(`[RP Memory] ${beats.length} beats extracted at turn ${currentTurn}`);
         }
+    }
+
+    _recordRawTurns(messages, startTurn) {
+        if (!Array.isArray(messages) || messages.length === 0) return;
+
+        for (let i = 0; i < messages.length; i += 2) {
+            const turnMessages = messages.slice(i, i + 2);
+            const storyTurn = startTurn + Math.floor(i / 2);
+            const text = this._buildRawTurnText(turnMessages);
+            if (!text) continue;
+            const linkedEntities = RawTurnRanker.resolveLinkedEntities(this.memoryStore, text);
+
+            this.memoryStore.addRawTurn({
+                id: `raw-turn-${storyTurn}`,
+                storyTurn,
+                text,
+                chatIndexes: turnMessages.map(msg => msg.index),
+                linkedEntities,
+                linkedEntityNames: linkedEntities
+                    .map(id => this._lookupEntityName(id))
+                    .filter(Boolean),
+            });
+        }
+    }
+
+    _buildRawTurnText(messages) {
+        return messages
+            .map(msg => {
+                const speaker = msg.name || (msg.isUser ? 'User' : 'Assistant');
+                const text = String(msg.text || '')
+                    .replace(/\s+/g, ' ')
+                    .trim();
+                if (!text) return '';
+                return `${speaker}: ${text}`;
+            })
+            .filter(Boolean)
+            .join('\n');
+    }
+
+    _lookupEntityName(entityId) {
+        const categories = ['mainCharacter', 'characters', 'locations', 'goals', 'events'];
+        for (const category of categories) {
+            const entity = this.memoryStore.getEntity(category, entityId);
+            if (entity?.name) return entity.name;
+        }
+        return entityId;
     }
 
     /**

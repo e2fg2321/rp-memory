@@ -191,6 +191,13 @@
                     <label data-i18n="Token budget (0 = uncapped):">Token budget (0 = uncapped): <b><span id="rp_memory_budget_val">0</span></b></label>
                 </div>
                 <input id="rp_memory_budget" type="range" min="0" max="8000" step="100" value="0" />
+                <div class="flex-container alignitemscenter" style="gap:10px; margin-top:8px;">
+                    <label data-i18n="Reserve tokens for chat history:">Reserve tokens for chat history:</label>
+                    <input id="rp_memory_chat_history_reserve_tokens" class="text_pole" type="number" min="0" step="50" value="0" style="width:120px;" />
+                </div>
+                <div class="rp-mem-embeddings-hint" data-i18n="Best-effort cap: RP Memory backs off so SillyTavern can keep at least this many prompt tokens available for chat history.">
+                    Best-effort cap: RP Memory backs off so SillyTavern can keep at least this many prompt tokens available for chat history.
+                </div>
 
                 <hr />
 
@@ -233,6 +240,24 @@
                         <div id="rp_memory_refresh_embedding_models" class="menu_button menu_button_icon" title="Refresh embedding model list" data-i18n="[title]Refresh embedding model list">
                             <i class="fa-solid fa-arrows-rotate"></i>
                         </div>
+                    </div>
+                </div>
+
+                <label data-i18n="Episodic Context Mode">Episodic Context Mode</label>
+                <select id="rp_memory_episodic_mode" class="text_pole">
+                    <option value="beats" data-i18n="Beats (default)">Beats (default)</option>
+                    <option value="raw_turns_experimental" data-i18n="Raw turns (experimental)">Raw turns (experimental)</option>
+                </select>
+                <div class="rp-mem-embeddings-hint" data-i18n="Experimental raw-turn mode skips beat storage, records exchange transcripts linked to entities, and uses an extra LLM ranking pass during injection when Smart Retrieval is enabled.">
+                    Experimental raw-turn mode skips beat storage, records exchange transcripts linked to entities, and uses an extra LLM ranking pass during injection when Smart Retrieval is enabled.
+                </div>
+                <div id="rp_memory_raw_turn_compaction_container">
+                    <label class="checkbox_label">
+                        <input id="rp_memory_raw_turn_compaction_enabled" type="checkbox" />
+                        <span data-i18n="Compact support raw turns before injection">Compact support raw turns before injection</span>
+                    </label>
+                    <div class="rp-mem-embeddings-hint" data-i18n="Keeps the top-ranked raw turns verbatim and asks a second LLM call to compress lower-priority support turns for the current scene before injection.">
+                        Keeps the top-ranked raw turns verbatim and asks a second LLM call to compress lower-priority support turns for the current scene before injection.
                     </div>
                 </div>
 

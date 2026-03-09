@@ -11,6 +11,7 @@ const LABELS = {
         activeGoals: 'Active Goals',
         majorEvents: 'Major Events',
         storyBeats: 'Recent Story Beats',
+        rawTurns: 'Relevant Raw Turns',
         storyContext: 'Story Context',
         pinned: 'PINNED',
         noDescription: 'No description',
@@ -66,6 +67,7 @@ const LABELS = {
         activeGoals: '活跃目标',
         majorEvents: '重大事件',
         storyBeats: '近期剧情节拍',
+        rawTurns: '相关原始回合',
         storyContext: '故事背景',
         pinned: '置顶',
         noDescription: '暂无描述',
@@ -178,6 +180,7 @@ export class PromptInjector {
      * @param {string|null} opts.sceneType
      * @param {number} opts.currentTurn - current story turn for fallback scoring
      * @param {Array|null} opts.rankedBeats - ranked beats from embedding service
+     * @param {Array|null} opts.rankedRawTurns - ranked raw turns from the raw-turn ranker
      * @param {Array|null} opts.reflections - reflections to inject
      * @param {Array|null} opts.rankedGoals - pre-ranked goals from GoalsManager
      * @param {Map|null} opts.goalBeats - goal-adjacent beats from GoalsManager (goalId → beat[])
@@ -191,27 +194,30 @@ export class PromptInjector {
             sceneType = null,
             currentTurn = 0,
             rankedBeats = null,
+            rankedRawTurns = null,
             reflections = null,
             rankedGoals = null,
             goalBeats = null,
             narrativeDirection = null,
             authorDirection,
+            tokenBudgetOverride = undefined,
         } = opts;
         const activeAuthorDirection = authorDirection === undefined
             ? memoryStore?.getAuthorDirection?.()
             : authorDirection;
         if (relevantEntities !== null) {
-            return this._formatWithBudget(relevantEntities, sceneType, rankedBeats, reflections, memoryStore, rankedGoals, goalBeats, narrativeDirection, activeAuthorDirection);
+            return this._formatWithBudget(relevantEntities, sceneType, rankedBeats, rankedRawTurns, reflections, memoryStore, rankedGoals, goalBeats, narrativeDirection, activeAuthorDirection, tokenBudgetOverride);
         }
-        return this._formatAll(memoryStore, currentTurn, rankedBeats, reflections, rankedGoals, goalBeats, narrativeDirection, activeAuthorDirection);
+        return this._formatAll(memoryStore, currentTurn, rankedBeats, rankedRawTurns, reflections, rankedGoals, goalBeats, narrativeDirection, activeAuthorDirection, tokenBudgetOverride);
     }
 
     /**
      * Fallback: format all entities with tri-score-like ordering.
      * Includes all entities (not just Tier 1-2), sorted by score.
      */
-    _formatAll(memoryStore, currentTurn = 0, rankedBeats = null, reflections = null, rankedGoals = null, goalBeats = null, narrativeDirection = null, authorDirection = null) {
-        const budget = this.getSettings().tokenBudget;
+    _formatAll(memoryStore, currentTurn = 0, rankedBeats = null, rankedRawTurns = null, reflections = null, rankedGoals = null, goalBeats = null, narrativeDirection = null, authorDirection = null, tokenBudgetOverride = undefined) {
+        const totalBudget = this._resolveTotalBudget(tokenBudgetOverride);
+        const episodicMode = this.getSettings().episodicMemoryMode || 'beats';
 
         // Collect all entities across categories with scores
         const allEntities = [];
@@ -233,8 +239,8 @@ export class PromptInjector {
         // Sort by score descending
         allEntities.sort((a, b) => b.score - a.score);
 
-        if (budget > 0) {
-            return this._formatWithBudget(allEntities, null, rankedBeats, reflections, null, rankedGoals, goalBeats, narrativeDirection, authorDirection);
+        if (Number.isFinite(totalBudget)) {
+            return this._formatWithBudget(allEntities, null, rankedBeats, rankedRawTurns, reflections, null, rankedGoals, goalBeats, narrativeDirection, authorDirection, totalBudget);
         }
 
         // No budget — include everything
@@ -278,7 +284,17 @@ export class PromptInjector {
         }
 
         // Beats section
-        if (rankedBeats && rankedBeats.length > 0) {
+        if (rankedRawTurns && rankedRawTurns.length > 0) {
+            const rawTurns = rankedRawTurns.map(item => item.turn || item);
+            sections.push(this._formatRawTurns(rawTurns.slice(0, 6)));
+        } else if (episodicMode === 'raw_turns_experimental') {
+            const recentRawTurns = memoryStore.getRecentRawTurns(6)
+                .slice()
+                .sort((a, b) => (a.storyTurn || 0) - (b.storyTurn || 0));
+            if (recentRawTurns.length > 0) {
+                sections.push(this._formatRawTurns(recentRawTurns));
+            }
+        } else if (rankedBeats && rankedBeats.length > 0) {
             const beats = rankedBeats.map(rb => rb.beat || rb);
             sections.push(this._formatBeats(beats.slice(0, 10)));
         } else {
@@ -356,15 +372,20 @@ export class PromptInjector {
      * Pass 1: Guarantee minimum entities per category.
      * Pass 2: Fill remaining budget with highest-scored entities.
      */
-    _formatWithBudget(relevantEntities, sceneType = null, rankedBeats = null, reflections = null, memoryStore = null, rankedGoals = null, goalBeats = null, narrativeDirection = null, authorDirection = null) {
+    _formatWithBudget(relevantEntities, sceneType = null, rankedBeats = null, rankedRawTurns = null, reflections = null, memoryStore = null, rankedGoals = null, goalBeats = null, narrativeDirection = null, authorDirection = null, tokenBudgetOverride = undefined) {
         const settings = this.getSettings();
-        const budget = settings.tokenBudget;
+        const totalBudget = this._resolveTotalBudget(tokenBudgetOverride);
+        if (Number.isFinite(totalBudget) && totalBudget <= 0) {
+            return '';
+        }
+
         const beatBudgetPercent = settings.beatBudgetPercent || 25;
         const reflectionBudgetPercent = settings.reflectionBudgetPercent || 15;
+        const episodicMode = settings.episodicMemoryMode || 'beats';
 
         const l = this.labels;
         const rankedEntities = this._mergeGoalRanking(relevantEntities, rankedGoals);
-        let totalBudget = budget > 0 ? budget : Infinity;
+        const unlimited = !Number.isFinite(totalBudget);
         let currentTokens = estimateTokens(`${l.worldStateOpen}\n${l.worldStateClose}`);
 
         // Pre-sections: reflections and beats
@@ -373,12 +394,16 @@ export class PromptInjector {
         let beatTokens = 0;
 
         // Reserve budget portions for reflections and beats (cap combined at 60% so entities get at least 40%)
-        const combinedPercent = Math.min(reflectionBudgetPercent + beatBudgetPercent, 60);
-        const adjustedReflectionPercent = combinedPercent > 60 ? Math.floor(reflectionBudgetPercent * 60 / combinedPercent) : reflectionBudgetPercent;
-        const adjustedBeatPercent = combinedPercent > 60 ? 60 - adjustedReflectionPercent : beatBudgetPercent;
-        const reflectionBudget = budget > 0 ? Math.floor(totalBudget * adjustedReflectionPercent / 100) : Infinity;
-        const beatBudget = budget > 0 ? Math.floor(totalBudget * adjustedBeatPercent / 100) : Infinity;
-        const entityBudget = budget > 0 ? totalBudget - reflectionBudget - beatBudget : Infinity;
+        const totalPercent = reflectionBudgetPercent + beatBudgetPercent;
+        const adjustedReflectionPercent = totalPercent > 60
+            ? Math.floor(reflectionBudgetPercent * 60 / totalPercent)
+            : reflectionBudgetPercent;
+        const adjustedBeatPercent = totalPercent > 60
+            ? 60 - adjustedReflectionPercent
+            : beatBudgetPercent;
+        const reflectionBudget = unlimited ? Infinity : Math.floor(totalBudget * adjustedReflectionPercent / 100);
+        const beatBudget = unlimited ? Infinity : Math.floor(totalBudget * adjustedBeatPercent / 100);
+        const entityBudget = unlimited ? Infinity : totalBudget - reflectionBudget - beatBudget;
 
         // Format reflections
         if (reflections && reflections.length > 0) {
@@ -438,7 +463,7 @@ export class PromptInjector {
                 );
                 const entityTokens = estimateTokens(entityText);
 
-                if (entityBudget !== Infinity && (currentTokens + entityTokens) > (totalBudget - beatBudget)) {
+                if (!unlimited && (currentTokens + entityTokens) > (totalBudget - beatBudget)) {
                     // Budget exceeded even for minimums — use priority to decide
                     continue;
                 }
@@ -466,7 +491,7 @@ export class PromptInjector {
             );
             const entityTokens = estimateTokens(entityText);
 
-            if (entityBudget !== Infinity && (currentTokens + entityTokens) > (totalBudget - beatBudget)) {
+            if (!unlimited && (currentTokens + entityTokens) > (totalBudget - beatBudget)) {
                 break;
             }
 
@@ -495,12 +520,24 @@ export class PromptInjector {
         }
 
         // Beats section (with context expansion)
-        if (rankedBeats && rankedBeats.length > 0) {
-            const expandedBeats = this._expandBeatContext(rankedBeats, memoryStore, beatBudget, budget <= 0);
+        if (rankedRawTurns && rankedRawTurns.length > 0) {
+            const rawTurns = rankedRawTurns.map(item => item.turn || item);
+            const fittedRawTurns = this._fitRawTurnsToBudget(rawTurns, beatBudget, unlimited);
+            if (fittedRawTurns.length > 0) {
+                sections.push(this._formatRawTurns(fittedRawTurns));
+            }
+        } else if (episodicMode === 'raw_turns_experimental' && memoryStore) {
+            const rawTurns = memoryStore.getRecentRawTurns(8);
+            const fittedRawTurns = this._fitRawTurnsToBudget(rawTurns, beatBudget, unlimited);
+            if (fittedRawTurns.length > 0) {
+                sections.push(this._formatRawTurns(fittedRawTurns));
+            }
+        } else if (rankedBeats && rankedBeats.length > 0) {
+            const expandedBeats = this._expandBeatContext(rankedBeats, memoryStore, beatBudget, unlimited);
             if (expandedBeats.length > 0) {
                 const beatsText = this._formatExpandedBeats(expandedBeats);
                 const beatsTokens = estimateTokens(beatsText);
-                if (beatsTokens <= beatBudget || budget <= 0) {
+                if (beatsTokens <= beatBudget || unlimited) {
                     sections.push(beatsText);
                 }
             }
@@ -513,6 +550,15 @@ export class PromptInjector {
         }
 
         return this._composePrompt(sections, authorDirection);
+    }
+
+    _resolveTotalBudget(tokenBudgetOverride = undefined) {
+        if (Number.isFinite(tokenBudgetOverride)) {
+            return Math.max(0, Math.floor(tokenBudgetOverride));
+        }
+
+        const configured = Number(this.getSettings().tokenBudget);
+        return configured > 0 ? Math.floor(configured) : Infinity;
     }
 
     /**
@@ -581,6 +627,9 @@ export class PromptInjector {
 
         const beats = memoryStore.getBeats();
         if (beats.length > 0) sections.push(this._formatBeats(beats));
+
+        const rawTurns = memoryStore.getRawTurns();
+        if (rawTurns.length > 0) sections.push(this._formatRawTurns(rawTurns));
 
         const reflections = memoryStore.getReflections();
         if (reflections.length > 0) sections.push(this._formatReflections(reflections));
@@ -894,6 +943,20 @@ export class PromptInjector {
         return lines.join('\n');
     }
 
+    _formatRawTurns(rawTurns) {
+        const l = this.labels;
+        const ordered = rawTurns
+            .slice()
+            .sort((a, b) => (a.storyTurn || 0) - (b.storyTurn || 0));
+        const lines = [`## ${l.rawTurns}`];
+
+        for (const turn of ordered) {
+            lines.push(...this._formatRawTurnEntry(turn));
+        }
+
+        return lines.join('\n');
+    }
+
     /**
      * Format reflections section for injection.
      * Groups by branch (plot vs portrayal) with sub-headings by horizon.
@@ -1061,5 +1124,58 @@ export class PromptInjector {
             text += `${prefix} [${l.turn} ${beat.storyTurn}] ${beat.text}${participantStr}\n`;
         }
         return estimateTokens(text);
+    }
+
+    _fitRawTurnsToBudget(rawTurns, rawTurnBudget, unlimited) {
+        if (!unlimited && rawTurnBudget <= 0) {
+            return [];
+        }
+
+        const selected = [];
+        let usedTokens = estimateTokens(`## ${this.labels.rawTurns}`);
+
+        const ordered = rawTurns
+            .slice()
+            .sort((a, b) => (a.storyTurn || 0) - (b.storyTurn || 0));
+
+        for (const turn of ordered) {
+            const candidateTokens = this._estimateRawTurnTokens(turn);
+            if (!unlimited && selected.length > 0 && (usedTokens + candidateTokens) > rawTurnBudget) {
+                continue;
+            }
+
+            if (!unlimited && selected.length === 0 && (usedTokens + candidateTokens) > rawTurnBudget) {
+                selected.push(turn);
+                break;
+            }
+
+            selected.push(turn);
+            usedTokens += candidateTokens;
+        }
+
+        return selected;
+    }
+
+    _formatRawTurnEntry(turn) {
+        const l = this.labels;
+        const linkedValues = Array.isArray(turn.linkedEntityNames) && turn.linkedEntityNames.length > 0
+            ? turn.linkedEntityNames
+            : turn.linkedEntities;
+        const linked = Array.isArray(linkedValues) && linkedValues.length > 0
+            ? ` (${linkedValues.join(', ')})`
+            : '';
+        const body = this._getRawTurnText(turn)
+            .split('\n')
+            .map(line => `  ${line}`);
+
+        return [`- [${l.turn} ${turn.storyTurn}]${linked}`, ...body];
+    }
+
+    _estimateRawTurnTokens(turn) {
+        return estimateTokens(this._formatRawTurnEntry(turn).join('\n'));
+    }
+
+    _getRawTurnText(turn) {
+        return String(turn?.displayText || turn?.text || '').trim();
     }
 }

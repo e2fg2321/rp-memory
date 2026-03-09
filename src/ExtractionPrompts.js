@@ -501,7 +501,28 @@ importance（1-10）、type（"conflict" | "discovery" | "relationship" | "decis
 === 时效信号 ===
 实体目录中包含 "updatedAgo" 字段，显示距上次更新已过多少轮。标记为"最近提取"的实体是在最近1-2个周期中处理的 — 其当前字段值已显示。请对照当前消息审查它们：如果消息揭示了变化或新细节则更新，如果已经准确则从输出中省略。`;
 
-  static getUnifiedUserPrompt(messages, currentState, userName, charName, lang = 'en', scenarioContext = '', precedingContext = '') {
+  static getUnifiedSystem(lang = 'en', includeBeats = true) {
+    const base = lang === 'zh' ? this.UNIFIED_SYSTEM_ZH : this.UNIFIED_SYSTEM;
+    if (includeBeats) return base;
+
+    if (lang === 'zh') {
+      return `${base}
+
+=== 实验模式覆盖 ===
+本轮提取使用原始回合检索，不使用 beats。
+- 不要输出 beats 内容。
+- 可以省略 "beats" 键；如果保留，必须输出空数组 []。`;
+    }
+
+    return `${base}
+
+=== Experimental Override ===
+This extraction run uses raw-turn retrieval instead of beats.
+- Do NOT output beat content.
+- You may omit the "beats" key entirely; if you include it, it must be an empty array [].`;
+  }
+
+  static getUnifiedUserPrompt(messages, currentState, userName, charName, lang = 'en', scenarioContext = '', precedingContext = '', includeBeats = true) {
     const stateSections = [];
 
     // Characters
@@ -553,7 +574,7 @@ importance（1-10）、type（"conflict" | "discovery" | "relationship" | "decis
       parts.push(`用户的角色是 "${userName}" — 仅在 mainCharacter 类别中追踪他们（id 为 "main-character"），不要放在 characters 中。
 主要 AI 角色是 "${charName}" — 如果有重要更新，请在 characters 中追踪他们。
 
-提取所有6个类别中的变更。仅输出差异 — 新增或变更的实体。没有变更的类别使用空数组 []。始终为当前消息包含1-4个节拍。
+提取所有变更。仅输出差异 — 新增或变更的实体。没有变更的类别使用空数组 []。${includeBeats ? '始终为当前消息包含1-4个节拍。' : '不要输出 beats；如需保留该键，只能输出空数组 []。'}
 如果一个实体已在上方的已知实体列表中（包括其别名），请使用其现有的 ID 和名称。`);
       return parts.join('\n\n');
     }
@@ -568,7 +589,7 @@ importance（1-10）、type（"conflict" | "discovery" | "relationship" | "decis
     parts.push(`The user's character is "${userName}" — track them ONLY in the mainCharacter category (id "main-character"), not in characters.
 The primary AI character is "${charName}" — DO track them in characters if they have meaningful updates.
 
-Extract all changes across all 6 categories. Output only the diff — new or changed entities. Use empty arrays [] for categories with no changes. Always include 1-4 beats for the current messages.
+Extract all changes across the tracked categories. Output only the diff — new or changed entities. Use empty arrays [] for categories with no changes. ${includeBeats ? 'Always include 1-4 beats for the current messages.' : 'Do NOT output beats; if you keep the "beats" key, it must be an empty array [].'}
 If an entity already exists in the ALL KNOWN ENTITIES list above (including its aliases), use its existing ID and name.`);
     return parts.join('\n\n');
   }

@@ -20,7 +20,7 @@ export class MemoryStore {
 
     _createEmptyState() {
         return {
-            version: 4,
+            version: 5,
             lastExtractionTurn: 0,
             lastReflectionTurn: 0,
             extractionInProgress: false,
@@ -31,6 +31,7 @@ export class MemoryStore {
             goals: {},
             events: {},
             beats: [],
+            rawTurns: [],
             reflections: [],
             authorDirection: this._createEmptyAuthorDirection(),
             changeLog: [],
@@ -46,10 +47,11 @@ export class MemoryStore {
         if (savedState.version === 1) {
             // Migrate v1 state to the latest schema: provenance-wrapped fields + author direction support
             this._state = deepClone(savedState);
-            this._state.version = 4;
+            this._state.version = 5;
             this._state.extractionInProgress = false;
             this._state.lastReflectionTurn = 0;
             this._state.beats = [];
+            this._state.rawTurns = [];
             this._state.reflections = [];
             this._state.changeLog = [];
             delete this._state._embeddings;
@@ -59,13 +61,14 @@ export class MemoryStore {
             // Ensure aliases exist on all entities
             this._ensureAliases();
             this._ensureAuthorDirection();
-        } else if (savedState.version === 2 || savedState.version === 3 || savedState.version === 4) {
+        } else if (savedState.version === 2 || savedState.version === 3 || savedState.version === 4 || savedState.version === 5) {
             this._state = deepClone(savedState);
-            this._state.version = 4;
+            this._state.version = 5;
             this._state.extractionInProgress = false;
             delete this._state._embeddings;
             // Ensure arrays exist (defensive)
             if (!Array.isArray(this._state.beats)) this._state.beats = [];
+            if (!Array.isArray(this._state.rawTurns)) this._state.rawTurns = [];
             if (!Array.isArray(this._state.reflections)) this._state.reflections = [];
             if (!Array.isArray(this._state.changeLog)) this._state.changeLog = [];
             this._ensureAliases();
@@ -303,6 +306,7 @@ export class MemoryStore {
             goals: Object.keys(this._state.goals).length,
             events: Object.keys(this._state.events).length,
             beats: this._state.beats.length,
+            rawTurns: this._state.rawTurns.length,
             reflections: this._state.reflections.length,
             changes: this._state.changeLog.length,
         };
@@ -463,6 +467,31 @@ export class MemoryStore {
      */
     setBeats(beats) {
         this._state.beats = beats;
+    }
+
+    // --- Raw Turns (Experimental episodic retrieval) ---
+
+    addRawTurn(rawTurn) {
+        if (!rawTurn?.id) return;
+
+        const existingIndex = this._state.rawTurns.findIndex(turn => turn.id === rawTurn.id);
+        if (existingIndex >= 0) {
+            this._state.rawTurns[existingIndex] = rawTurn;
+            return;
+        }
+
+        this._state.rawTurns.push(rawTurn);
+    }
+
+    getRawTurns() {
+        return [...this._state.rawTurns];
+    }
+
+    getRecentRawTurns(n) {
+        return this._state.rawTurns
+            .slice()
+            .sort((a, b) => (b.storyTurn || 0) - (a.storyTurn || 0))
+            .slice(0, n);
     }
 
     // --- Reflections (Layer 3) ---

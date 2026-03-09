@@ -32,6 +32,19 @@ export class OpenRouterClient {
      * @param {object} [opts] - Optional overrides: { temperature }
      */
     async chatCompletion(messages, signal = null, modelOverride = null, opts = {}) {
+        const result = await this.chatCompletionDetailed(messages, signal, modelOverride, opts);
+        return result.content;
+    }
+
+    /**
+     * Send a chat completion request to OpenRouter and return content plus usage metadata.
+     * @param {Array} messages - Chat messages
+     * @param {AbortSignal} [signal] - Optional abort signal to cancel the request
+     * @param {string} [modelOverride] - Optional model ID to use instead of settings.model
+     * @param {object} [opts] - Optional overrides: { temperature }
+     * @returns {Promise<{content: string, usage: object|null, model: string|null, finishReason: string|null}>}
+     */
+    async chatCompletionDetailed(messages, signal = null, modelOverride = null, opts = {}) {
         const settings = this.getSettings();
         const apiKey = await this.resolveKey();
 
@@ -96,7 +109,12 @@ export class OpenRouterClient {
                     );
                 }
 
-                return content;
+                return {
+                    content,
+                    usage: data.usage || null,
+                    model: data.model || null,
+                    finishReason: finishReason || null,
+                };
             } catch (error) {
                 // Abort errors and non-retryable errors propagate immediately
                 if (error.name === 'AbortError' || error._noRetry) {
