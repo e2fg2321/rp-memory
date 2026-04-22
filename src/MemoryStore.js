@@ -18,11 +18,21 @@ export class MemoryStore {
         };
     }
 
+    _createEmptyDirectorPlan() {
+        return {
+            arcBeats: [],
+            pacingSignal: 'advance',
+            sceneAssessment: '',
+            lastUpdatedTurn: 0,
+        };
+    }
+
     _createEmptyState() {
         return {
-            version: 5,
+            version: 6,
             lastExtractionTurn: 0,
             lastReflectionTurn: 0,
+            lastDirectorTurn: 0,
             extractionInProgress: false,
             turnCounter: 0,
             characters: {},
@@ -34,6 +44,8 @@ export class MemoryStore {
             rawTurns: [],
             reflections: [],
             authorDirection: this._createEmptyAuthorDirection(),
+            directorPlan: this._createEmptyDirectorPlan(),
+            npcAgendas: {},
             changeLog: [],
         };
     }
@@ -47,13 +59,15 @@ export class MemoryStore {
         if (savedState.version === 1) {
             // Migrate v1 state to the latest schema: provenance-wrapped fields + author direction support
             this._state = deepClone(savedState);
-            this._state.version = 5;
+            this._state.version = 6;
             this._state.extractionInProgress = false;
             this._state.lastReflectionTurn = 0;
+            this._state.lastDirectorTurn = 0;
             this._state.beats = [];
             this._state.rawTurns = [];
             this._state.reflections = [];
             this._state.changeLog = [];
+            this._state.npcAgendas = {};
             delete this._state._embeddings;
 
             // Migrate field values to provenance format
@@ -61,9 +75,10 @@ export class MemoryStore {
             // Ensure aliases exist on all entities
             this._ensureAliases();
             this._ensureAuthorDirection();
-        } else if (savedState.version === 2 || savedState.version === 3 || savedState.version === 4 || savedState.version === 5) {
+            this._ensureDirectorPlan();
+        } else if (savedState.version >= 2 && savedState.version <= 6) {
             this._state = deepClone(savedState);
-            this._state.version = 5;
+            this._state.version = 6;
             this._state.extractionInProgress = false;
             delete this._state._embeddings;
             // Ensure arrays exist (defensive)
@@ -71,8 +86,11 @@ export class MemoryStore {
             if (!Array.isArray(this._state.rawTurns)) this._state.rawTurns = [];
             if (!Array.isArray(this._state.reflections)) this._state.reflections = [];
             if (!Array.isArray(this._state.changeLog)) this._state.changeLog = [];
+            if (!this._state.npcAgendas || typeof this._state.npcAgendas !== 'object') this._state.npcAgendas = {};
+            if (!Number.isFinite(this._state.lastDirectorTurn)) this._state.lastDirectorTurn = 0;
             this._ensureAliases();
             this._ensureAuthorDirection();
+            this._ensureDirectorPlan();
         } else {
             this._state = this._createEmptyState();
         }
@@ -130,6 +148,24 @@ export class MemoryStore {
                 ensureEntity(entity);
             }
         }
+    }
+
+    _ensureDirectorPlan() {
+        const fallback = this._createEmptyDirectorPlan();
+        const current = this._state.directorPlan;
+        if (!current || typeof current !== 'object') {
+            this._state.directorPlan = fallback;
+            return;
+        }
+        this._state.directorPlan = {
+            ...fallback,
+            ...current,
+            arcBeats: Array.isArray(current.arcBeats) ? current.arcBeats : [],
+            pacingSignal: ['advance', 'hold', 'complicate'].includes(current.pacingSignal)
+                ? current.pacingSignal : 'advance',
+            sceneAssessment: typeof current.sceneAssessment === 'string' ? current.sceneAssessment : '',
+            lastUpdatedTurn: Number.isFinite(current.lastUpdatedTurn) ? current.lastUpdatedTurn : 0,
+        };
     }
 
     _ensureAuthorDirection() {
@@ -235,6 +271,111 @@ export class MemoryStore {
         this._state.authorDirection = this._createEmptyAuthorDirection();
     }
 
+    // --- Director plan (forward-looking arc beats + pacing) ---
+
+    getLastDirectorTurn() {
+        return this._state.lastDirectorTurn || 0;
+    }
+
+    setLastDirectorTurn(turn) {
+        this._state.lastDirectorTurn = turn;
+    }
+
+    getDirectorPlan() {
+        return deepClone(this._state.directorPlan || this._createEmptyDirectorPlan());
+    }
+
+    hasDirectorPlan() {
+        const plan = this._state.directorPlan;
+        return Boolean(plan && Array.isArray(plan.arcBeats) && plan.arcBeats.length > 0);
+    }
+
+    setDirectorPlan(plan) {
+        const fallback = this._createEmptyDirectorPlan();
+        const next = { ...fallback, ...(plan || {}) };
+
+        next.arcBeats = Array.isArray(next.arcBeats)
+            ? next.arcBeats
+                .filter(b => b && typeof b === 'object' && typeof b.text === 'string' && b.text.trim())
+                .map((b, i) => ({
+                    id: typeof b.id === 'string' && b.id.trim() ? b.id.trim() : `arc-${Date.now()}-${i}`,
+                    text: String(b.text).trim(),
+                    participants: Array.isArray(b.participants)
+                        ? b.participants.filter(p => typeof p === 'string').slice(0, 8)
+                        : [],
+                    status: ['pending', 'active', 'hit', 'abandoned'].includes(b.status) ? b.status : 'pending',
+                    priority: Number.isFinite(b.priority) ? Math.max(1, Math.min(10, Math.round(b.priority))) : 5,
+                }))
+                .slice(0, 8)
+            : [];
+
+        next.pacingSignal = ['advance', 'hold', 'complicate'].includes(next.pacingSignal)
+            ? next.pacingSignal : 'advance';
+        next.sceneAssessment = typeof next.sceneAssessment === 'string' ? next.sceneAssessment.slice(0, 500) : '';
+        next.lastUpdatedTurn = Number.isFinite(next.lastUpdatedTurn)
+            ? next.lastUpdatedTurn : this.getTurnCounter();
+
+        this._state.directorPlan = next;
+    }
+
+    clearDirectorPlan() {
+        this._state.directorPlan = this._createEmptyDirectorPlan();
+    }
+
+    // --- NPC agendas (per-character inner state / intent) ---
+
+    getNPCAgendas() {
+        return deepClone(this._state.npcAgendas || {});
+    }
+
+    getNPCAgenda(characterId) {
+        const agenda = this._state.npcAgendas?.[characterId];
+        return agenda ? deepClone(agenda) : null;
+    }
+
+    setNPCAgenda(characterId, agenda) {
+        if (!characterId || typeof characterId !== 'string') return;
+        if (!this._state.npcAgendas || typeof this._state.npcAgendas !== 'object') {
+            this._state.npcAgendas = {};
+        }
+        const entry = {
+            agenda: typeof agenda?.agenda === 'string' ? agenda.agenda.trim().slice(0, 400) : '',
+            innerState: typeof agenda?.innerState === 'string' ? agenda.innerState.trim().slice(0, 300) : '',
+            lastObservation: typeof agenda?.lastObservation === 'string'
+                ? agenda.lastObservation.trim().slice(0, 300) : '',
+            lastUpdatedTurn: Number.isFinite(agenda?.lastUpdatedTurn)
+                ? agenda.lastUpdatedTurn : this.getTurnCounter(),
+        };
+        if (!entry.agenda && !entry.innerState && !entry.lastObservation) {
+            delete this._state.npcAgendas[characterId];
+            return;
+        }
+        this._state.npcAgendas[characterId] = entry;
+    }
+
+    clearNPCAgenda(characterId) {
+        if (this._state.npcAgendas && characterId in this._state.npcAgendas) {
+            delete this._state.npcAgendas[characterId];
+        }
+    }
+
+    clearAllNPCAgendas() {
+        this._state.npcAgendas = {};
+    }
+
+    /**
+     * Remove agendas for characters that no longer exist in the store.
+     */
+    pruneOrphanedNPCAgendas() {
+        const agendas = this._state.npcAgendas || {};
+        const ids = Object.keys(agendas);
+        if (ids.length === 0) return;
+        const validIds = new Set(Object.keys(this._state.characters || {}));
+        for (const id of ids) {
+            if (!validIds.has(id)) delete agendas[id];
+        }
+    }
+
     // --- Entity CRUD ---
 
     getEntity(category, id) {
@@ -309,6 +450,8 @@ export class MemoryStore {
             rawTurns: this._state.rawTurns.length,
             reflections: this._state.reflections.length,
             changes: this._state.changeLog.length,
+            arcBeats: this._state.directorPlan?.arcBeats?.length || 0,
+            npcAgendas: Object.keys(this._state.npcAgendas || {}).length,
         };
     }
 
