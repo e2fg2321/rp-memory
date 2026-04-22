@@ -15,6 +15,9 @@ import { LanguageDetector } from './src/LanguageDetector.js';
 import { ReflectionEngine } from './src/ReflectionEngine.js';
 import { GoalsManager } from './src/GoalsManager.js';
 import { RawTurnRanker } from './src/RawTurnRanker.js';
+import { NPCReflector } from './src/NPCReflector.js';
+import { PlotDirector } from './src/PlotDirector.js';
+import { NarrativeInjector } from './src/NarrativeInjector.js';
 import { createEmptyEntity, diffEntitySnapshots, estimateTokens, unwrapField, wrapField } from './src/Utils.js';
 
 const MODULE_NAME = 'rp_memory';
@@ -53,6 +56,14 @@ const defaultSettings = {
     goalsIntentEnabled: false,
     goalsIntentModel: '',
     goalsIntentAsync: false,
+    // --- Director / narrative-agency layer ---
+    directorEnabled: false,
+    directorInterval: 3,
+    directorModel: '',
+    reflectorModel: '',
+    directorMaxNPCs: 4,
+    directorVisible: true,
+    directorInjectionDepth: 1,
 };
 
 // Singletons
@@ -65,6 +76,10 @@ let embeddingService = null;
 let rawTurnRanker = null;
 let reflectionEngine = null;
 let goalsManager = null;
+let npcReflector = null;
+let plotDirector = null;
+let narrativeInjector = null;
+let directorPassInProgress = false;
 let lastProcessedLength = 0;
 let cachedModelList = null;
 let cachedEmbeddingModelList = null;
@@ -306,6 +321,20 @@ function syncUIFromSettings() {
     $('#rp_memory_goals_intent_async').prop('checked', s.goalsIntentAsync);
     $('#rp_memory_goals_intent_model').val(s.goalsIntentModel);
     $('#rp_memory_language').val(s.language);
+
+    // Director settings
+    $('#rp_memory_director_enabled').prop('checked', s.directorEnabled);
+    $('#rp_memory_director_config_container').toggle(s.directorEnabled);
+    $('#rp_memory_director_interval').val(s.directorInterval);
+    $('#rp_memory_director_interval_val').text(s.directorInterval);
+    $('#rp_memory_director_max_npcs').val(s.directorMaxNPCs);
+    $('#rp_memory_director_max_npcs_val').text(s.directorMaxNPCs);
+    $('#rp_memory_director_injection_depth').val(s.directorInjectionDepth);
+    $('#rp_memory_director_injection_depth_val').text(s.directorInjectionDepth);
+    $('#rp_memory_director_visible').prop('checked', s.directorVisible);
+    $('#rp_memory_director_panel_container').toggle(s.directorVisible);
+    $('#rp_memory_director_model').val(s.directorModel || '');
+    $('#rp_memory_reflector_model').val(s.reflectorModel || '');
 }
 
 function bindSettingsListeners() {
@@ -439,6 +468,84 @@ function bindSettingsListeners() {
     $('#rp_memory_goals_intent_model').on('change', function () {
         getSettings().goalsIntentModel = $(this).val();
         saveSettingsDebounced();
+    });
+
+    // --- Director / narrative-agency controls ---
+    $('#rp_memory_director_enabled').on('change', function () {
+        const checked = $(this).prop('checked');
+        getSettings().directorEnabled = checked;
+        $('#rp_memory_director_config_container').toggle(checked);
+        saveSettingsDebounced();
+        if (checked) {
+            populateDirectorPipelineDropdown('rp_memory_director_model', 'directorModel', tt`Use main extraction model`);
+            populateDirectorPipelineDropdown('rp_memory_reflector_model', 'reflectorModel', tt`Use director model`);
+            renderDirectorPanel();
+        }
+        injectDirectorPrompt();
+    });
+
+    $('#rp_memory_director_interval').on('input', function () {
+        const val = Math.max(1, parseInt($(this).val(), 10) || 3);
+        getSettings().directorInterval = val;
+        $('#rp_memory_director_interval_val').text(val);
+        saveSettingsDebounced();
+    });
+
+    $('#rp_memory_director_max_npcs').on('input', function () {
+        const val = Math.max(1, Math.min(8, parseInt($(this).val(), 10) || 4));
+        getSettings().directorMaxNPCs = val;
+        $('#rp_memory_director_max_npcs_val').text(val);
+        saveSettingsDebounced();
+    });
+
+    $('#rp_memory_director_injection_depth').on('input', function () {
+        const val = Math.max(0, Math.min(10, parseInt($(this).val(), 10) || 1));
+        getSettings().directorInjectionDepth = val;
+        $('#rp_memory_director_injection_depth_val').text(val);
+        saveSettingsDebounced();
+        injectDirectorPrompt();
+    });
+
+    $('#rp_memory_director_model').on('change', function () {
+        getSettings().directorModel = $(this).val();
+        saveSettingsDebounced();
+    });
+
+    $('#rp_memory_reflector_model').on('change', function () {
+        getSettings().reflectorModel = $(this).val();
+        saveSettingsDebounced();
+    });
+
+    $('#rp_memory_director_visible').on('change', function () {
+        getSettings().directorVisible = $(this).prop('checked');
+        $('#rp_memory_director_panel_container').toggle(getSettings().directorVisible);
+        saveSettingsDebounced();
+    });
+
+    $('#rp_memory_director_run_now').on('click', async function () {
+        if (!plotDirector) return;
+        const $btn = $(this);
+        $btn.prop('disabled', true);
+        try {
+            await triggerDirectorPass(getContext(), { force: true });
+            toastr.success(tt`Director pass complete`, 'RP Memory', { timeOut: 2000 });
+        } catch (err) {
+            console.warn('[RP Memory] Forced director pass failed:', err.message);
+            toastr.error(tt`Director pass failed — see console`);
+        } finally {
+            $btn.prop('disabled', false);
+        }
+    });
+
+    $('#rp_memory_director_clear_plan').on('click', function () {
+        if (!memoryStore) return;
+        memoryStore.clearDirectorPlan();
+        memoryStore.clearAllNPCAgendas();
+        memoryStore.setLastDirectorTurn(0);
+        saveMemoryState();
+        injectDirectorPrompt();
+        renderDirectorPanel();
+        toastr.info(tt`Director plan cleared`, 'RP Memory', { timeOut: 2000 });
     });
 
     // Language
@@ -785,6 +892,8 @@ async function injectMemoryPrompt() {
         s.injectionRole,
     );
 
+    injectDirectorPrompt();
+
     // Update token count display
     const tokens = estimateTokens(promptText || '');
     const totalStored = injector.getTotalStoredTokens(memoryStore);
@@ -803,6 +912,104 @@ async function injectMemoryPrompt() {
     $('#rp_memory_token_count').text(countText);
 
     debugLog('Prompt injected', `${tokens} tokens`);
+}
+
+// ===================== Director Injection =====================
+
+const DIRECTOR_PROMPT_KEY = 'rp_memory_director';
+
+/**
+ * Build the director's forward-looking narrative block and inject via a distinct
+ * setExtensionPrompt key so it composes cleanly with the world-state block.
+ * Injected at a slightly shallower depth than world-state so the model reads
+ * it as closer-in framing.
+ */
+function injectDirectorPrompt() {
+    if (!narrativeInjector || !memoryStore) return;
+    const s = getSettings();
+
+    if (!s.enabled || !s.directorEnabled) {
+        setExtensionPrompt(DIRECTOR_PROMPT_KEY, '', s.injectionPosition, 0);
+        return;
+    }
+
+    const text = narrativeInjector.format(memoryStore);
+    if (!text) {
+        setExtensionPrompt(DIRECTOR_PROMPT_KEY, '', s.injectionPosition, 0);
+        return;
+    }
+
+    const depth = Math.max(0, Math.min(10, Number(s.directorInjectionDepth) || 1));
+    setExtensionPrompt(
+        DIRECTOR_PROMPT_KEY,
+        text,
+        s.injectionPosition,
+        depth,
+        false,
+        s.injectionRole,
+    );
+
+    if (s.debugMode) {
+        debugLog('Director block injected', `${estimateTokens(text)} tokens, depth ${depth}`);
+    }
+}
+
+/**
+ * Run the NPC reflector + plot director pipeline. Non-blocking.
+ * Gated by plotDirector.shouldRun() unless force=true.
+ */
+async function triggerDirectorPass(context, { force = false } = {}) {
+    const s = getSettings();
+    if (!s.enabled || !s.directorEnabled) return;
+    if (!plotDirector || !npcReflector) return;
+
+    if (!force && !plotDirector.shouldRun()) return;
+    if (directorPassInProgress) {
+        debugLog('Director pass already in progress, skipping');
+        return;
+    }
+
+    directorPassInProgress = true;
+    try {
+        const recentMessages = context
+            ? getRecentMessagesForGoalAnalysis(context, s.messagesPerExtraction * 2)
+            : [];
+
+        // Drop agendas for characters that no longer exist
+        memoryStore.pruneOrphanedNPCAgendas();
+
+        // Step 1: reflector — update each present NPC's agenda snapshot
+        const agendas = await npcReflector.reflect({ recentMessages });
+        for (const [charId, agenda] of Object.entries(agendas)) {
+            memoryStore.setNPCAgenda(charId, agenda);
+        }
+
+        // Step 2: director — revise the arc-beat plan using fresh agendas
+        const newPlan = await plotDirector.run({
+            recentMessages,
+            npcAgendas: memoryStore.getNPCAgendas(),
+        });
+
+        saveMemoryState();
+        injectDirectorPrompt();
+        renderDirectorPanel();
+
+        if (newPlan && s.debugMode) {
+            debugLog('Director pass complete', {
+                arcBeats: newPlan.arcBeats?.length || 0,
+                pacing: newPlan.pacingSignal,
+                npcs: Object.keys(agendas).length,
+            });
+        }
+    } catch (err) {
+        if (err?.name === 'AbortError') {
+            debugLog('Director pass aborted');
+            return;
+        }
+        console.warn('[RP Memory] Director pass failed:', err.message);
+    } finally {
+        directorPassInProgress = false;
+    }
 }
 
 /**
@@ -921,6 +1128,7 @@ function renderMemoryUI() {
     updateRecentChangeCount(counts.changes || 0);
     renderConflicts();
     renderRecentChanges();
+    renderDirectorPanel();
 
     // Also update floating nav counts + active panel
     updateFloatingNavCounts();
@@ -1779,17 +1987,25 @@ async function triggerExtraction(context) {
                 injectMemoryPrompt();
                 renderMemoryUI();
                 debugLog('Post-extraction tasks complete');
+                // Kick off director pass after reflection settles. Non-blocking; re-injects on completion.
+                triggerDirectorPass(context).catch(err => {
+                    if (err?.name !== 'AbortError') {
+                        console.warn('[RP Memory] Director pass failed:', err.message);
+                    }
+                });
             }).catch(err => {
                 console.warn('[RP Memory] Post-extraction tasks failed:', err.message);
                 // Still save/inject/render even if reflection failed
                 saveMemoryState();
                 injectMemoryPrompt();
                 renderMemoryUI();
+                triggerDirectorPass(context).catch(() => {});
             });
         } else {
             saveMemoryState();
             injectMemoryPrompt();
             renderMemoryUI();
+            triggerDirectorPass(context).catch(() => {});
         }
     } catch (err) {
         if (err?.name === 'AbortError') {
@@ -2200,6 +2416,126 @@ function populateGoalsIntentModelDropdown() {
             $select.val(currentVal);
         }
     }
+}
+
+/**
+ * Populate a director-pipeline model dropdown ("#rp_memory_director_model" or
+ * "#rp_memory_reflector_model"). Same shape as populateGoalsIntentModelDropdown.
+ */
+function populateDirectorPipelineDropdown(selectId, settingKey, fallbackLabel) {
+    const $select = $(`#${selectId}`);
+    if ($select.length === 0) return;
+
+    const currentVal = $select.val() || getSettings()[settingKey] || '';
+    $select.empty();
+    $select.append(`<option value="">${escapeHtml(fallbackLabel)}</option>`);
+
+    const models = cachedModelList;
+    if (!models || models.length === 0) {
+        loadModelList().then(() => populateDirectorPipelineDropdown(selectId, settingKey, fallbackLabel));
+        return;
+    }
+
+    for (const model of models) {
+        const pricePerMillion = parseFloat(model.promptPrice || 0) * 1_000_000;
+        const priceStr = pricePerMillion < 0.01 ? 'free' : `$${pricePerMillion.toFixed(2)}/1M`;
+        const label = `${model.name || model.id} — ${priceStr}`;
+        $select.append(`<option value="${escapeHtml(model.id)}">${escapeHtml(label)}</option>`);
+    }
+
+    if (currentVal) {
+        if ($select.find(`option[value="${CSS.escape(currentVal)}"]`).length) {
+            $select.val(currentVal);
+        } else {
+            $select.prepend(`<option value="${escapeHtml(currentVal)}">${escapeHtml(currentVal)} (saved)</option>`);
+            $select.val(currentVal);
+        }
+    }
+}
+
+/**
+ * Render the visible Director panel: scene assessment, pacing, arc beats, NPC agendas.
+ * No-op if the markup isn't in the DOM yet (feature toggle off or template not rendered).
+ */
+function renderDirectorPanel() {
+    const $root = $('#rp_memory_director_panel');
+    if ($root.length === 0) return;
+    if (!memoryStore) return;
+
+    const plan = memoryStore.getDirectorPlan();
+    const agendas = memoryStore.getNPCAgendas();
+    const lastTurn = memoryStore.getLastDirectorTurn();
+    const currentTurn = memoryStore.getTurnCounter();
+
+    const pacingLabel = {
+        advance: tt`ADVANCE — push the main line forward`,
+        hold: tt`HOLD — maintain tension, deepen the current moment`,
+        complicate: tt`COMPLICATE — introduce a new complication`,
+    }[plan.pacingSignal] || tt`ADVANCE — push the main line forward`;
+
+    const pacingClass = `rp-mem-pacing-${plan.pacingSignal || 'advance'}`;
+
+    let arcBeatsHtml = '';
+    if (plan.arcBeats.length === 0) {
+        arcBeatsHtml = `<div class="rp-mem-director-empty">${escapeHtml(tt`No arc beats yet. Director will run on next cadence tick (every ${getSettings().directorInterval} turns) or press Run Now.`)}</div>`;
+    } else {
+        const sorted = [...plan.arcBeats].sort((a, b) => (b.priority || 0) - (a.priority || 0));
+        arcBeatsHtml = sorted.map(beat => {
+            const statusLabel = {
+                pending: tt`pending`, active: tt`active`, hit: tt`hit`, abandoned: tt`abandoned`,
+            }[beat.status] || tt`pending`;
+            const participantNames = (beat.participants || []).map(pid => {
+                const c = memoryStore.getEntity('characters', pid);
+                if (c?.name) return c.name;
+                if (pid === 'main-character' || pid === 'mc') {
+                    const mc = memoryStore.getMainCharacter();
+                    return mc?.name || pid;
+                }
+                return pid;
+            });
+            const whoHtml = participantNames.length
+                ? ` <span class="rp-mem-director-who">${escapeHtml(participantNames.join(', '))}</span>`
+                : '';
+            return `<div class="rp-mem-director-beat rp-mem-beat-status-${escapeHtml(beat.status)}">
+                <span class="rp-mem-director-priority">p${beat.priority || 5}</span>
+                <span class="rp-mem-director-status">${escapeHtml(statusLabel)}</span>
+                <span class="rp-mem-director-text">${escapeHtml(beat.text)}</span>${whoHtml}
+            </div>`;
+        }).join('');
+    }
+
+    let agendasHtml = '';
+    const agendaEntries = Object.entries(agendas);
+    if (agendaEntries.length === 0) {
+        agendasHtml = `<div class="rp-mem-director-empty">${escapeHtml(tt`No NPC agendas yet — no "present" NPCs found, or director hasn't run.`)}</div>`;
+    } else {
+        agendasHtml = agendaEntries.map(([charId, agenda]) => {
+            const c = memoryStore.getEntity('characters', charId);
+            const name = c?.name || charId;
+            return `<div class="rp-mem-director-agenda">
+                <div class="rp-mem-director-agenda-name">${escapeHtml(name)}</div>
+                ${agenda.agenda ? `<div class="rp-mem-director-agenda-line"><b>${escapeHtml(tt`wants`)}:</b> ${escapeHtml(agenda.agenda)}</div>` : ''}
+                ${agenda.innerState ? `<div class="rp-mem-director-agenda-line"><b>${escapeHtml(tt`feels`)}:</b> ${escapeHtml(agenda.innerState)}</div>` : ''}
+                ${agenda.lastObservation ? `<div class="rp-mem-director-agenda-line"><b>${escapeHtml(tt`noticed`)}:</b> ${escapeHtml(agenda.lastObservation)}</div>` : ''}
+            </div>`;
+        }).join('');
+    }
+
+    const staleness = lastTurn === 0
+        ? tt`never run`
+        : tt`last run turn ${lastTurn} (${Math.max(0, currentTurn - lastTurn)} turns ago)`;
+
+    $root.html(`
+        <div class="rp-mem-director-meta">
+            <span class="rp-mem-director-staleness">${escapeHtml(staleness)}</span>
+            <span class="rp-mem-director-pacing ${pacingClass}">${escapeHtml(pacingLabel)}</span>
+        </div>
+        ${plan.sceneAssessment ? `<div class="rp-mem-director-assessment">${escapeHtml(plan.sceneAssessment)}</div>` : ''}
+        <div class="rp-mem-director-section-header">${escapeHtml(tt`Arc Beats (next 3–5 turns)`)}</div>
+        <div class="rp-mem-director-beats">${arcBeatsHtml}</div>
+        <div class="rp-mem-director-section-header">${escapeHtml(tt`NPC Agendas`)}</div>
+        <div class="rp-mem-director-agendas">${agendasHtml}</div>
+    `);
 }
 
 function truncateDirectionText(text, maxLength = 96) {
@@ -3301,6 +3637,11 @@ jQuery(async function () {
         goalsManager = new GoalsManager(memoryStore, embeddingService, apiClient, () => getSettings(), getPromptLanguage);
         pipeline.goalsManager = goalsManager;
 
+        // Director / narrative-agency pipeline
+        npcReflector = new NPCReflector(apiClient, memoryStore, () => getSettings(), getPromptLanguage);
+        plotDirector = new PlotDirector(apiClient, memoryStore, () => getSettings(), getPromptLanguage);
+        narrativeInjector = new NarrativeInjector(() => getSettings(), getPromptLanguage);
+
         // Sync UI
         syncUIFromSettings();
 
@@ -3329,6 +3670,12 @@ jQuery(async function () {
         if (getSettings().goalsIntentEnabled) {
             // Populate after model list loads (populateGoalsIntentModelDropdown chains off cachedModelList)
             loadModelList().then(() => populateGoalsIntentModelDropdown()).catch(() => {});
+        }
+        if (getSettings().directorEnabled) {
+            loadModelList().then(() => {
+                populateDirectorPipelineDropdown('rp_memory_director_model', 'directorModel', tt`Use main extraction model`);
+                populateDirectorPipelineDropdown('rp_memory_reflector_model', 'reflectorModel', tt`Use director model`);
+            }).catch(() => {});
         }
 
         // Load initial state
