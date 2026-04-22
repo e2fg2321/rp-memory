@@ -1,4 +1,4 @@
-import { unwrapField } from './Utils.js';
+import { unwrapField, isLikelyPresent } from './Utils.js';
 
 /**
  * NPCReflector — per-NPC agenda + inner-state update pass.
@@ -28,23 +28,34 @@ export class NPCReflector {
     }
 
     /**
-     * Pick NPCs worth reflecting on: "present" field true, tier 1-2, not the MC.
-     * Caps at maxAgents to keep cost bounded.
+     * Pick NPCs worth reflecting on: heuristically present (see isLikelyPresent),
+     * tier 1-2, not the MC. Caps at maxAgents to keep cost bounded.
      */
-    _selectActiveNPCs(maxAgents) {
+    _selectActiveNPCs(maxAgents, recentMessages = []) {
         const characters = this.memoryStore.getAllEntities('characters');
         const candidates = [];
+        const skipped = [];
 
         for (const character of Object.values(characters)) {
             if (!character || character.tier === 3) continue;
-            const present = unwrapField(character.fields?.present);
-            const presentBool = present === true || present === 'true' || present === 'yes';
-            if (!presentBool) continue;
-            candidates.push(character);
+            if (isLikelyPresent(character, recentMessages)) {
+                candidates.push(character);
+            } else {
+                skipped.push(character);
+            }
         }
 
         candidates.sort((a, b) => (b.importance || 0) - (a.importance || 0));
-        return candidates.slice(0, maxAgents);
+        const selected = candidates.slice(0, maxAgents);
+
+        if (this.getSettings().debugMode) {
+            console.debug('[RP Memory] NPCReflector selection:', {
+                selected: selected.map(c => `${c.name} (imp ${c.importance}, present=${JSON.stringify(unwrapField(c.fields?.present))})`),
+                skipped: skipped.map(c => `${c.name} (imp ${c.importance}, present=${JSON.stringify(unwrapField(c.fields?.present))})`),
+            });
+        }
+
+        return selected;
     }
 
     /**
@@ -54,7 +65,7 @@ export class NPCReflector {
     async reflect({ recentMessages = [], sceneType = null } = {}) {
         const settings = this.getSettings();
         const maxAgents = settings.directorMaxNPCs || 4;
-        const activeNPCs = this._selectActiveNPCs(maxAgents);
+        const activeNPCs = this._selectActiveNPCs(maxAgents, recentMessages);
 
         if (activeNPCs.length === 0) {
             if (settings.debugMode) {

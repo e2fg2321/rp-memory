@@ -1,4 +1,4 @@
-import { unwrapField } from './Utils.js';
+import { unwrapField, isLikelyPresent } from './Utils.js';
 
 /**
  * PlotDirector — produces a forward-looking arc-beat plan plus a pacing signal.
@@ -59,7 +59,7 @@ export class PlotDirector {
         const goals = this._collectActiveGoals();
         const recentBeats = this.memoryStore.getRecentBeats(10);
         const recentReflections = this.memoryStore.getRecentReflections(5);
-        const presentCharacters = this._collectPresentCharacters();
+        const presentCharacters = this._collectPresentCharacters(recentMessages);
 
         const systemPrompt = this._buildSystemPrompt(lang);
         const userPrompt = this._buildUserPrompt({
@@ -145,15 +145,12 @@ export class PlotDirector {
         return active.slice(0, 6);
     }
 
-    _collectPresentCharacters() {
+    _collectPresentCharacters(recentMessages = []) {
         const characters = this.memoryStore.getAllEntities('characters');
         const present = [];
         for (const ch of Object.values(characters)) {
             if (!ch || ch.tier === 3) continue;
-            const isPresent = unwrapField(ch.fields?.present);
-            if (isPresent === true || isPresent === 'true' || isPresent === 'yes') {
-                present.push(ch);
-            }
+            if (isLikelyPresent(ch, recentMessages)) present.push(ch);
         }
         return present.slice(0, 8);
     }
@@ -164,7 +161,7 @@ export class PlotDirector {
      * + recent high-importance events. Keeps the director grounded in the world,
      * not just in agendas + beats.
      */
-    _buildWorldStateSummary() {
+    _buildWorldStateSummary(recentMessages = []) {
         const lines = [];
 
         // Main Character — full profile (replaces the old partial section)
@@ -206,9 +203,7 @@ export class PlotDirector {
                 const mood = unwrapField(f.mood);
                 const relationships = unwrapField(f.relationships);
                 const goals = unwrapField(f.goals);
-                const present = unwrapField(f.present);
-                const isPresent = present === true || present === 'true' || present === 'yes';
-                const presentMark = isPresent ? ' [PRESENT]' : ' [offscreen]';
+                const presentMark = isLikelyPresent(ch, recentMessages) ? ' [PRESENT]' : ' [offscreen]';
 
                 lines.push(`  [${ch.id}] ${ch.name}${presentMark}`);
                 if (personality) lines.push(`    personality: ${personality}`);
@@ -340,7 +335,7 @@ Keep each arcBeat text ≤ 30 words. "participants" uses character IDs from the 
         // Compressed world-state: MC + tier-1-2 characters (present + offscreen)
         // + locations + recent major events. This keeps the director grounded in
         // WHO exists / WHERE / WHAT HAS HAPPENED — not just agendas and beats.
-        const worldSummary = this._buildWorldStateSummary();
+        const worldSummary = this._buildWorldStateSummary(recentMessages);
         if (worldSummary) {
             lines.push('=== World State (characters, locations, events) ===');
             lines.push(worldSummary);

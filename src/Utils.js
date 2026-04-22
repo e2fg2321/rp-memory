@@ -44,6 +44,52 @@ export function unwrapField(field) {
 }
 
 /**
+ * Heuristically decide if an NPC is "present" in the current scene.
+ *
+ * Extraction is diff-mode so the `present` field often goes unset on new
+ * characters, or gets stuck at "yes" after a character leaves silently. We
+ * need a forgiving read.
+ *
+ * Rules in order:
+ * 1. `present` field explicitly says yes/no → trust it.
+ * 2. Character name or any alias appears in recent messages → present
+ *    (handles silent-offstage drift + extraction-forgot-to-flag both ways).
+ * 3. Tier 1-2 + importance >= 7 → present (fallback for high-importance
+ *    characters extraction missed).
+ * 4. Otherwise → not present.
+ */
+export function isLikelyPresent(character, recentMessages = []) {
+    if (!character) return false;
+
+    const presentField = unwrapField(character.fields?.present);
+    const explicitYes = presentField === true || presentField === 'true' || presentField === 'yes';
+    const explicitNo = presentField === false || presentField === 'false' || presentField === 'no';
+
+    // Name/alias mention in recent messages — primary truth signal, wins over
+    // stale `present` field in either direction.
+    const names = [character.name, ...(Array.isArray(character.aliases) ? character.aliases : [])]
+        .filter(n => typeof n === 'string' && n.trim().length >= 2);
+    if (names.length > 0 && recentMessages.length > 0) {
+        const haystack = recentMessages
+            .map(m => (m?.text || '').toLowerCase())
+            .join(' \n ');
+        for (const name of names) {
+            const lower = name.toLowerCase().trim();
+            if (lower && haystack.includes(lower)) return true;
+        }
+        // If recent messages exist and character is NOT mentioned, treat
+        // explicit-yes as stale-yes and lean on fallback checks instead.
+        if (explicitNo) return false;
+    }
+
+    if (explicitYes) return true;
+    if (explicitNo) return false;
+
+    // Fallback: high-importance tier 1-2 characters extraction forgot to flag
+    return character.tier !== 3 && (character.importance || 0) >= 7;
+}
+
+/**
  * Wrap a plain value into a provenance object.
  */
 export function wrapField(value, turn) {
@@ -162,6 +208,7 @@ export function createEmptyEntity(category, name, turn = 0) {
                 mood: '',
                 status: '',
                 relationships: '',
+                present: '',
                 backstory: '',
                 speechPatterns: '',
                 history: '',
