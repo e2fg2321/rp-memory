@@ -951,6 +951,7 @@ function injectDirectorPrompt() {
 
     if (s.debugMode) {
         debugLog('Director block injected', `${estimateTokens(text)} tokens, depth ${depth}`);
+        debugLog('Director block content:\n', text);
     }
 }
 

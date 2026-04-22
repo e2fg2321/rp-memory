@@ -13,15 +13,22 @@ import { estimateTokens } from './Utils.js';
  */
 const LABELS = {
     en: {
-        open: '[RP Memory — Director]\n(Forward-looking narrative guidance. Weight: stronger than world-state reference, but may yield to explicit user redirection.)',
-        close: '[/RP Memory Director]',
-        principle: 'Narrative principle: this story is NOT driven solely by user input. NPCs have independent agendas. When user input is low-information, advance the scene via NPC agendas and the plan below rather than mirroring the user.',
-        pacingAdvance: 'Pacing: ADVANCE — push the main line forward this turn.',
-        pacingHold: 'Pacing: HOLD — maintain tension, deepen the current moment without shifting the arc.',
-        pacingComplicate: 'Pacing: COMPLICATE — introduce a new complication this turn (pay off a planted hook, a fresh conflict, or an NPC pivot).',
+        open: '[RP Memory — DIRECTOR — HIGH PRIORITY]\nThis block is AUTHORIAL DIRECTION for your next response. Apply it, do not merely consider it. It has higher priority than the descriptive world-state block. Only defer when the user\'s most recent message is an explicit redirection (direct action, OOC correction, or high-information narrative steer) — in which case incorporate the redirection AND then resume the plan below.',
+        instructions: [
+            'HOW TO APPLY THIS BLOCK:',
+            '1. Pick ONE active arcBeat below (highest priority that fits this moment) and meaningfully advance it in your next response. Do not gesture at all of them — pick one and move it forward concretely.',
+            '2. Every present NPC must speak and act from THEIR OWN agenda (listed below), not as a passive reaction to the user. Even short / low-information user input (e.g. "okay", "I look around", "...") is NOT an instruction to echo — it is an invitation for NPCs to pursue what they want.',
+            '3. Do NOT summarize, restate, or mirror the user\'s last message back to them. If the user\'s input is minimal, the scene still advances via NPC agendas and the arc.',
+            '4. Apply the pacing signal strictly (see below).',
+            '5. Render NPC inner state through dialogue, action, and subtle behaviour — do not narrate their feelings out loud as exposition unless it\'s consistent with the narrative voice.',
+        ].join('\n'),
+        pacingAdvance: 'PACING: ADVANCE — this turn must push the main line forward. Resolve an ambiguity, escalate a conflict, have an NPC make a decision, or close a beat. Do not write a purely reactive / holding-pattern response.',
+        pacingHold: 'PACING: HOLD — this turn stays in this moment. Deepen emotion, interiority, sensory detail, or subtext. Do NOT introduce new plot developments; make the present moment denser.',
+        pacingComplicate: 'PACING: COMPLICATE — this turn must introduce a new complication. Pay off a planted hook, surface a new conflict, have an NPC pivot against expectation, or escalate stakes. Something changes this turn that wasn\'t true last turn.',
         sceneAssessment: 'Scene assessment',
-        arcBeats: 'Next-few-turns arc (prioritized):',
-        npcAgendas: 'NPC inner states (each character acts on their own agenda):',
+        arcBeats: 'ACTIVE ARC BEATS — pick ONE to advance this turn (priority-weighted):',
+        npcAgendas: 'NPC inner states — each NPC acts from THEIR OWN agenda, not as a reaction to the user:',
+        close: '[/RP Memory Director]',
         agenda: 'wants',
         innerState: 'feels',
         observation: 'noticed',
@@ -31,15 +38,22 @@ const LABELS = {
         statusAbandoned: 'abandoned',
     },
     zh: {
-        open: '[RP Memory — 导演]\n(前瞻性叙事指引。权重：强于世界状态参考，但可因用户显式指引而调整。)',
-        close: '[/RP Memory Director]',
-        principle: '叙事原则：本故事不仅由用户输入驱动。NPC 有独立的 agenda。当用户输入信息量较低时，应依据 NPC agenda 和下面的计划推进场景，而不是仅仅回应用户。',
-        pacingAdvance: '节奏：推进 — 本轮推动主线前进。',
-        pacingHold: '节奏：保持 — 维持当前张力，深化当下情境，不转移主线。',
-        pacingComplicate: '节奏：复杂化 — 本轮引入新的复杂因素（伏笔回收、新冲突、NPC 转向）。',
+        open: '[RP Memory — 导演 — 高优先级]\n本区块是本轮回复的"作者指令"（AUTHORIAL DIRECTION）。要应用它，不只是参考它。其优先级高于世界状态描述区块。仅当用户最新消息是明确的方向调整（直接行动、OOC 修正、或高信息量的剧情引导）时，才允许偏离——此时先吸收用户调整，再回到下方计划。',
+        instructions: [
+            '如何应用本区块：',
+            '1. 从下方"活跃弧线节拍"中挑选 ONE 个（优先级高且贴合当下者），在本回合切实推进它。不要敷衍所有节拍——挑一个具体推进。',
+            '2. 每个在场 NPC 必须依据他们自己的 agenda（见下）发声、行动，而非被动回应用户。即便用户输入很短或低信息（例如"好"、"我看看四周"、"……"），那也不是复述回去的指令——是让 NPC 推进自己想要的事情。',
+            '3. 不要复述、改写、或镜像用户的上一条消息。当用户输入稀薄时，场景仍需依靠 NPC agenda 和弧线推进。',
+            '4. 严格按下方的节奏信号执行。',
+            '5. 将 NPC 的内心状态通过对话、行动、微表情体现，而不是直接作为旁白说出来（除非叙事语气本身就允许）。',
+        ].join('\n'),
+        pacingAdvance: '节奏：推进 —— 本回合必须推动主线前进。解决一个悬念、升级一个冲突、让 NPC 做出决定、或结束一个节拍。不要写纯反应 / 保持原地不动的回复。',
+        pacingHold: '节奏：保持 —— 本回合停留在当下。深化情感、内心、感官细节或潜台词。不要引入新的剧情进展；让当下这一刻更有密度。',
+        pacingComplicate: '节奏：复杂化 —— 本回合必须引入一个新的复杂因素。回收一个伏笔、浮出一个新冲突、让 NPC 违反预期地转向、或抬升赌注。本回合结束时有一件新的"上一回合不成立"的事情发生。',
         sceneAssessment: '场景评估',
-        arcBeats: '未来几轮的剧情走向（按优先级）:',
-        npcAgendas: 'NPC 内心状态（每个角色依据自己的 agenda 行动）:',
+        arcBeats: '活跃弧线节拍 —— 本回合挑 ONE 个推进（按优先级）：',
+        npcAgendas: 'NPC 内心状态 —— 每个 NPC 都依据自己的 agenda 行动，不是用户的反应机：',
+        close: '[/RP Memory 导演]',
         agenda: '想要',
         innerState: '感受',
         observation: '注意到',
@@ -74,7 +88,7 @@ export class NarrativeInjector {
 
         lines.push(L.open);
         lines.push('');
-        lines.push(L.principle);
+        lines.push(L.instructions);
         lines.push('');
 
         if (hasPlan) {
