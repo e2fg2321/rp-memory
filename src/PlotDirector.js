@@ -409,10 +409,12 @@ Keep each arcBeat text ≤ 30 words. "participants" uses character IDs from the 
         }
 
         if (recentMessages && recentMessages.length > 0) {
-            lines.push('=== Recent Conversation (last few turns) ===');
-            for (const msg of recentMessages.slice(-6)) {
+            lines.push('=== Recent Conversation (broad window — clever continuity optimization deferred) ===');
+            // Director benefits from seeing more history. Individual messages capped
+            // at 600 chars to keep any single very long post-ified turn from dominating.
+            for (const msg of recentMessages.slice(-30)) {
                 const speaker = msg.speaker || (msg.isUser ? 'User' : 'Assistant');
-                const text = (msg.text || '').slice(0, 400);
+                const text = (msg.text || '').slice(0, 600);
                 lines.push(`  ${speaker}: ${text}`);
             }
             lines.push('');

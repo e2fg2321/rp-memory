@@ -202,9 +202,11 @@ Each field ≤ 30 words.`;
         if (recentMessages.length > 0) {
             lines.push('');
             lines.push(`Recent conversation (MC is "${mcName}"):`);
-            for (const msg of recentMessages.slice(-6)) {
+            // Keep a meaningful chunk of chat history — short-memory reflections
+            // need enough context to track what this NPC has actually seen.
+            for (const msg of recentMessages.slice(-20)) {
                 const speaker = msg.speaker || (msg.isUser ? mcName : 'NPC');
-                const text = (msg.text || '').slice(0, 280);
+                const text = (msg.text || '').slice(0, 400);
                 lines.push(`  ${speaker}: ${text}`);
             }
         }
