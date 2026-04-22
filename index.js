@@ -972,8 +972,12 @@ async function triggerDirectorPass(context, { force = false } = {}) {
 
     directorPassInProgress = true;
     try {
+        // Fetch a broad window for the director pipeline. Director slices to ~30,
+        // reflector slices to ~20, so we pull 40 to give both plenty to work with.
+        // A smarter continuity optimization (salient-turn selection, rolling summary)
+        // is deferred — for now just shove enough context in.
         const recentMessages = context
-            ? getRecentMessagesForGoalAnalysis(context, s.messagesPerExtraction * 2)
+            ? getRecentMessagesForGoalAnalysis(context, 40)
             : [];
 
         // Drop agendas for characters that no longer exist

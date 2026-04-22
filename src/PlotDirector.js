@@ -158,6 +158,117 @@ export class PlotDirector {
         return present.slice(0, 8);
     }
 
+    /**
+     * Compressed world-state summary for the director: full MC + all tier-1-2
+     * characters (present AND offscreen, with present marker) + tier-1-2 locations
+     * + recent high-importance events. Keeps the director grounded in the world,
+     * not just in agendas + beats.
+     */
+    _buildWorldStateSummary() {
+        const lines = [];
+
+        // Main Character — full profile (replaces the old partial section)
+        const mc = this.memoryStore.getMainCharacter();
+        if (mc) {
+            const f = mc.fields || {};
+            const fields = [
+                ['description', unwrapField(f.description)],
+                ['personality', unwrapField(f.personality)],
+                ['skills', unwrapField(f.skills)],
+                ['inventory', unwrapField(f.inventory)],
+                ['health', unwrapField(f.health)],
+                ['conditions', unwrapField(f.conditions)],
+                ['buffs', unwrapField(f.buffs)],
+                ['currentLocation', unwrapField(f.currentLocation)],
+                ['currentTime', unwrapField(f.currentTime)],
+            ];
+            lines.push(`Main Character: ${mc.name || 'MC'}`);
+            for (const [key, val] of fields) {
+                if (val) lines.push(`  ${key}: ${val}`);
+            }
+        }
+
+        // Characters — ALL tier 1-2, sorted by importance (most relevant first).
+        // Offscreen ones matter: the director needs to know who exists to plan who returns.
+        const characters = this.memoryStore.getAllEntities('characters');
+        const tier12Chars = Object.values(characters)
+            .filter(c => c && c.tier !== 3)
+            .sort((a, b) => (b.importance || 0) - (a.importance || 0))
+            .slice(0, 12);
+
+        if (tier12Chars.length > 0) {
+            lines.push('');
+            lines.push('Known Characters (tier 1-2, sorted by importance):');
+            for (const ch of tier12Chars) {
+                const f = ch.fields || {};
+                const personality = unwrapField(f.personality);
+                const status = unwrapField(f.status);
+                const mood = unwrapField(f.mood);
+                const relationships = unwrapField(f.relationships);
+                const goals = unwrapField(f.goals);
+                const present = unwrapField(f.present);
+                const isPresent = present === true || present === 'true' || present === 'yes';
+                const presentMark = isPresent ? ' [PRESENT]' : ' [offscreen]';
+
+                lines.push(`  [${ch.id}] ${ch.name}${presentMark}`);
+                if (personality) lines.push(`    personality: ${personality}`);
+                if (mood) lines.push(`    mood: ${mood}`);
+                if (status) lines.push(`    status: ${status}`);
+                if (relationships) lines.push(`    relationships: ${relationships}`);
+                if (goals) lines.push(`    personal goals: ${goals}`);
+            }
+        }
+
+        // Locations — tier 1-2, condensed
+        const locations = this.memoryStore.getAllEntities('locations');
+        const tier12Locs = Object.values(locations)
+            .filter(l => l && l.tier !== 3)
+            .sort((a, b) => (b.importance || 0) - (a.importance || 0))
+            .slice(0, 6);
+
+        if (tier12Locs.length > 0) {
+            lines.push('');
+            lines.push('Known Locations (tier 1-2):');
+            for (const loc of tier12Locs) {
+                const f = loc.fields || {};
+                const desc = unwrapField(f.description);
+                const atmos = unwrapField(f.atmosphere);
+                const features = unwrapField(f.notableFeatures);
+                const parts = [];
+                if (desc) parts.push(desc);
+                if (atmos) parts.push(`atmosphere: ${atmos}`);
+                if (features) parts.push(`features: ${features}`);
+                lines.push(`  ${loc.name}${parts.length ? ' — ' + parts.join(' · ') : ''}`);
+            }
+        }
+
+        // Major Events — recent high-significance
+        const events = this.memoryStore.getAllEntities('events');
+        const sortedEvents = Object.values(events)
+            .filter(e => e && (e.importance || 0) >= 6)
+            .sort((a, b) => (b.createdTurn || 0) - (a.createdTurn || 0))
+            .slice(0, 6);
+
+        if (sortedEvents.length > 0) {
+            lines.push('');
+            lines.push('Recent Major Events:');
+            for (const ev of sortedEvents) {
+                const f = ev.fields || {};
+                const desc = unwrapField(f.description);
+                const sig = unwrapField(f.significance);
+                const consequences = unwrapField(f.consequences);
+                const turn = unwrapField(f.turn) || ev.createdTurn || 0;
+                const parts = [];
+                if (desc) parts.push(desc);
+                if (consequences) parts.push(`consequences: ${consequences}`);
+                if (sig) parts.push(`significance: ${sig}`);
+                lines.push(`  T${turn} ${ev.name}${parts.length ? ' — ' + parts.join(' · ') : ''}`);
+            }
+        }
+
+        return lines.join('\n');
+    }
+
     _buildSystemPrompt(lang) {
         if (lang === 'zh') {
             return `你是故事导演（Plot Director）。你的任务不是写对话，而是规划未来 3-5 步的叙事走向。
@@ -226,18 +337,18 @@ Keep each arcBeat text ≤ 30 words. "participants" uses character IDs from the 
             lines.push('');
         }
 
-        if (mc) {
-            const mcName = mc.name || 'MC';
-            const mcLocation = unwrapField(mc.fields?.currentLocation);
-            const mcConditions = unwrapField(mc.fields?.conditions);
-            lines.push(`=== Main Character: ${mcName} ===`);
-            if (mcLocation) lines.push(`Location: ${mcLocation}`);
-            if (mcConditions) lines.push(`Conditions: ${mcConditions}`);
+        // Compressed world-state: MC + tier-1-2 characters (present + offscreen)
+        // + locations + recent major events. This keeps the director grounded in
+        // WHO exists / WHERE / WHAT HAS HAPPENED — not just agendas and beats.
+        const worldSummary = this._buildWorldStateSummary();
+        if (worldSummary) {
+            lines.push('=== World State (characters, locations, events) ===');
+            lines.push(worldSummary);
             lines.push('');
         }
 
         if (presentCharacters.length > 0) {
-            lines.push('=== Present NPCs (id — name) ===');
+            lines.push('=== Currently Present NPCs (id — name, cross-reference for agendas below) ===');
             for (const ch of presentCharacters) {
                 lines.push(`  ${ch.id} — ${ch.name}`);
             }
@@ -298,10 +409,12 @@ Keep each arcBeat text ≤ 30 words. "participants" uses character IDs from the 
         }
 
         if (recentMessages && recentMessages.length > 0) {
-            lines.push('=== Recent Conversation (last few turns) ===');
-            for (const msg of recentMessages.slice(-6)) {
+            lines.push('=== Recent Conversation (broad window — clever continuity optimization deferred) ===');
+            // Director benefits from seeing more history. Individual messages capped
+            // at 600 chars to keep any single very long post-ified turn from dominating.
+            for (const msg of recentMessages.slice(-30)) {
                 const speaker = msg.speaker || (msg.isUser ? 'User' : 'Assistant');
-                const text = (msg.text || '').slice(0, 400);
+                const text = (msg.text || '').slice(0, 600);
                 lines.push(`  ${speaker}: ${text}`);
             }
             lines.push('');
